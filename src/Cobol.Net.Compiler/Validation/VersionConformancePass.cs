@@ -462,7 +462,7 @@ internal sealed class VersionConformancePass
         // mandatory and directly follows SELECT [OPTIONAL], before any file-control clause keyword — the slot
         // is always the file being DEFINED. FD/statement file-name REFERENCES stay unchecked.
         CobolParserCore.FileNameContext { Parent: CobolParserCore.FileControlClauseGroupContext } => true,
-        // The PROGRAM-ID / FUNCTION-ID / END-marker program-name (§11.4.2 / §11.5 / §10.6.1): program-names
+        // The PROGRAM-ID / FUNCTION-ID / END-marker program-name (§11.10.2 / §11.5 / §10.6.1): program-names
         // are user-defined words (§8.3.2.2) and every programName site names the source unit itself, directly
         // after a dedicated header token — no keyword can occupy the slot.
         CobolParserCore.ProgramNameContext => true,

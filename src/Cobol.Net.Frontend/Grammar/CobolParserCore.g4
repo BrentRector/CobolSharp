@@ -146,7 +146,7 @@ programIdParagraph
     : PROGRAM_ID DOT programName externalizedNamePhrase? (IS? programIdAttributes PROGRAM?)? DOT
     ;
 
-// §11.4.2 program-name-1 is a user-defined word (§8.3.2.2). The `reservedGatedWord` alternative is the
+// §11.10.2 program-name-1 is a user-defined word (§8.3.2.2). The `reservedGatedWord` alternative is the
 // DECLARATION re-admission the reservation gate needs (kb/Work PB693, the dataName precedent): a §8.9-reserved
 // word is gated OUT of cobolWord at the editions that reserve it, so without this `PROGRAM-ID. UNLOCK.` at
 // --std 2002 answers a raw COBOL0001 "no viable alternative" instead of the targeted COBOLNET0901 that names

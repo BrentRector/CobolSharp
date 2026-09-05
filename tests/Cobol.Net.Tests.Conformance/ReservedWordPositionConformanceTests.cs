@@ -10,7 +10,7 @@ namespace CobolNet.Tests.Conformance;
 /// DEFAULT, LENGTH, NATIONAL are the table-backed ones) rejects with COBOLNET0901 (ISO §8.3.2.1 rule 1 /
 /// §8.3.2.1 r1: "Reserved words shall not be used as user-defined words or system-names") ONLY when it occupies a provable
 /// user-word position — the data entry-name slot (§13.16), a paragraph/section definition (§14.4.2/§14.4.3),
-/// the SELECT file-name (§12.4.5.1), a program-name site (§11.4.2). KEYWORD occurrences that the permissive
+/// the SELECT file-name (§12.4.5.1), a program-name site (§11.10.2). KEYWORD occurrences that the permissive
 /// grammar binds into optional entry-name slots — the report-group COLUMN clause (§13.18.14), the RW104A
 /// false-reject the former blanket token-type exclusion parked — stay unflagged at every edition. Severity
 /// routes through <c>EditionContext.Removed</c>: error strict / warning permissive (the 0901 band contract).
