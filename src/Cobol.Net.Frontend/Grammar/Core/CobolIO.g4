@@ -672,13 +672,18 @@ startStatement
 
     ;
 
-// ISO §14.9.41: START … KEY [IS] [relational-operator] {data-name | record-key-name}. The phrase is
-// an optional relational operator + key data-name (the left operand — the key of reference — is
-// implicit), NOT a full comparison. The operator may be omitted (then EQUAL is assumed), e.g.
-// "START f KEY IS data-name". comparisonOperator absorbs its own leading IS, so a separate optional
-// IS handles the no-operator form.
+// ISO §14.9.41.2 prints `KEY relational-operator { data-name-1 | record-key-name-1 }` — the operator carries NO
+// brackets on the printed page (measured at 600 dpi, PDF page 784 / printed folio 754), so it is REQUIRED
+// whenever the KEY phrase is written. It was `comparisonOperator?` under a comment asserting "the operator may
+// be omitted (then EQUAL is assumed)" on a §14.9.41 citation, and §14.9.41.4 GR15 says the opposite of what that
+// comment claimed: EQUAL is implied only "If the KEY phrase is not specified" — never when the operator alone
+// is. So `START f KEY IS K` compiled and ran, an UNDER-REJECTION of a spelling the format does not print
+// (kb/Work PB332). The separate `IS?` went with it: every `comparisonOperator` alternative already absorbs its
+// own leading IS (§8.8.4.2.2), so the outer one added nothing but `KEY IS IS = K`.
+// The operand SET is a different question — `comparisonOperator` is the condition language's whole operator
+// list, wider than the §8.8.4.2 general-relation format SR3 admits here (kb/Work PB333).
 startKeyPhrase
-    : KEY IS? comparisonOperator? dataReference (startWithLength)?   // WITH LENGTH introduction-gated at BIND time (StatementBinder.KeyedIo → Check(StartWithLength2002))
+    : KEY comparisonOperator dataReference startWithLength?   // WITH LENGTH introduction-gated at BIND time (StatementBinder.KeyedIo → Check(StartWithLength2002))
     ;
 
 // ISO §14.9.41.2 prints `[ WITH LENGTH arithmetic-expression-1 ]` with LENGTH underlined and WITH NOT
