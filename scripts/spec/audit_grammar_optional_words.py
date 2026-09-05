@@ -118,11 +118,13 @@ def declared_formats(md_text: str) -> list[Format]:
 
 
 def strip_comments(text: str) -> str:
-    """ANTLR source with `//` and `/* … */` comments blanked out, single-quoted literals left intact.
+    """ANTLR source with comments AND `{…}` actions/predicates blanked out, `'…'` literals left intact.
 
-    A comment is prose ABOUT the rule, so a keyword written in one is not a token the parser requires. The
+    A comment is prose ABOUT the rule, so a keyword written in one is not a token the parser requires; the
     previous version dropped comment-only LINES and kept trailing comments, which turned every explanatory
-    `// … ON …` into a false candidate.
+    `// … ON …` into a false candidate. An ACTION or SEMANTIC PREDICATE is target-language code and can never
+    hold a token reference — `{facilityWord("RECEIVE")}?` in the `statement` dispatch made that 200-alternative
+    rule look like the RECEIVE statement's own spelling and dragged 233 rules into its closure.
     """
     out, i, n = [], 0, len(text)
     while i < n:
@@ -140,21 +142,35 @@ def strip_comments(text: str) -> str:
             j = text.find("*/", i + 2)
             out.append(re.sub(r"[^\n]", " ", text[i:n if j < 0 else j + 2]))
             i = n if j < 0 else j + 2
+        elif c == "{":                                 # an action or predicate — blank it, keep the newlines
+            depth, j = 1, i + 1
+            while j < n and depth:
+                depth += {"{": 1, "}": -1}.get(text[j], 0)
+                j += 1
+            out.append(re.sub(r"[^\n]", " ", text[i:j]))
+            i = j
         else:
             out.append(c)
             i += 1
     return "".join(out)
 
 
-#: A parser-rule head, in EITHER of the two styles this grammar uses: the name alone on its line, or the name
-#: and the `:` together. The name-alone-only test missed 25 rules in CobolExpressions.g4 and CobolScreen.g4.
+#: A parser-rule head, in EITHER of the two styles this grammar uses: the name alone on its line with the `:`
+#: below it, or the name and the `:` together. The name-alone-only test missed 25 rules in CobolExpressions.g4
+#: and CobolScreen.g4. What makes it a RULE and not an ANTLR declaration (`tokens`, `options`, `channels`) is
+#: the `:` that must follow — a structural test, so no list of ANTLR keywords has to be maintained here.
 RULE_HEAD = re.compile(r"^([a-z][A-Za-z0-9_]*)[ \t]*(:?)[ \t]*$|^([a-z][A-Za-z0-9_]*)[ \t]*:", re.M)
 
 
 def grammar_rules(text: str) -> dict[str, str]:
     """Rule name -> rule body, for every parser rule, comments removed."""
     text = strip_comments(text)
-    heads = [(m.start(), m.group(1) or m.group(3)) for m in RULE_HEAD.finditer(text)]
+    heads = []
+    for m in RULE_HEAD.finditer(text):
+        if m.group(3) is None and not m.group(2):       # name alone: the `:` must be the next thing printed
+            if not re.match(r"\s*:", text[m.end():]):
+                continue
+        heads.append((m.start(), m.group(1) or m.group(3)))
     rules: dict[str, str] = {}
     for k, (pos, name) in enumerate(heads):
         end = heads[k + 1][0] if k + 1 < len(heads) else len(text)
@@ -162,6 +178,109 @@ def grammar_rules(text: str) -> dict[str, str]:
         stop = body.find("\n;")
         rules[name] = body if stop < 0 else body[:stop + 2]
     return rules
+
+
+_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def alternatives(body: str) -> list[str]:
+    """One rule body split into its TOP-LEVEL alternatives (a `|` inside `(…)` belongs to an inner group)."""
+    body = body[body.find(":") + 1:]
+    stop = body.rfind(";")
+    if stop >= 0:
+        body = body[:stop]
+    out, depth, start = [], 0, 0
+    for i, c in enumerate(body):
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif c == "|" and depth == 0:
+            out.append(body[start:i])
+            start = i + 1
+    out.append(body[start:])
+    return out
+
+
+def scan_alternative(alt: str) -> list[tuple[str, bool]]:
+    """(token, may-be-omitted) for every UPPERCASE token in one alternative.
+
+    A token may be omitted when it carries a `?`/`*` suffix of its own, or when ANY enclosing group does. That
+    is the whole optionality question the audit asks, and it has to be read from the STRUCTURE: the previous
+    regex only looked at the character after the token, so a required word inside `( … )?` read as required.
+    """
+    toks: list[list] = []
+    stack: list[list[int]] = [[]]
+    i, n = 0, len(alt)
+    while i < n:
+        c = alt[i]
+        if c == "(":
+            stack.append([])
+            i += 1
+            continue
+        if c == ")":
+            group = stack.pop() if len(stack) > 1 else []
+            i += 1
+            if i < n and alt[i] in "?*":
+                for k in group:
+                    toks[k][1] = True
+                i += 1
+            elif i < n and alt[i] == "+":
+                i += 1
+            stack[-1].extend(group)
+            continue
+        m = _TOKEN.match(alt, i)
+        if not m:
+            i += 1
+            continue
+        word = m.group(0)
+        i = m.end()
+        optional = i < n and alt[i] in "?*"
+        if i < n and alt[i] in "?*+":
+            i += 1
+        if re.fullmatch(r"[A-Z][A-Z0-9_]*", word):
+            toks.append([word, optional])
+            stack[-1].append(len(toks) - 1)
+    return [(w, o) for w, o in toks]
+
+
+def required_tokens(rules: dict[str, str]) -> dict[str, set[str]]:
+    """Rule -> the tokens it makes MANDATORY somewhere in its spelling.
+
+    Two structural exclusions, each earned by a false positive this audit produced:
+
+    * a SINGLE-TOKEN ALTERNATIVE in a rule that has several is a NAME alternative, not a format spelling —
+      `cobolWord`'s `| RECEIVE |` says RECEIVE may be a user-defined word, and `readDirection`'s `NEXT |
+      PREVIOUS` is a printed choice where one arm is not underlined. Neither is a word the parser demands;
+    * a rule whose ENTIRE body is one token and that is only ever referenced with a `?`/`*` suffix —
+      `timesKeyword : TIMES ;` used as `timesKeyword?` already permits `OCCURS 5`, so TIMES is not demanded.
+      Contrast `startWithLength : WITH LENGTH …` used as `(startWithLength)?`: omitting the whole PHRASE is
+      legal, writing it without WITH is not, so WITH stays a finding.
+    """
+    optional_only: dict[str, bool] = {}
+    for owner, body in rules.items():
+        for m in re.finditer(r"(?<![A-Za-z0-9_])([a-z][A-Za-z0-9_]*)[ \t]*([?*+]?)", body):
+            name = m.group(1)
+            if m.start() == 0 and name == owner:
+                continue                                  # the rule's own head is a definition, not a reference
+            if name in rules:
+                # ⚠ `"" in "?*"` is True — the suffix must be tested for MEMBERSHIP in a set, not a substring.
+                optional_only[name] = optional_only.get(name, True) and m.group(2) in {"?", "*"}
+    out: dict[str, set[str]] = {}
+    for name, body in rules.items():
+        alts = alternatives(body)
+        need: set[str] = set()
+        for alt in alts:
+            scanned = scan_alternative(alt)
+            if len(alts) > 1 and len(scanned) == 1 and not re.search(r"(?<![A-Za-z0-9_])[a-z][A-Za-z0-9_]*", alt):
+                continue                                  # a bare name alternative, not a spelling
+            need |= {w for w, opt in scanned if not opt}
+        if len(need) == 1 and optional_only.get(name, False):
+            whole = [w for alt in alts for w, _ in scan_alternative(alt)]
+            if len(whole) == 1:
+                need = set()                              # the token IS the optional unit — already omittable
+        out[name] = need
+    return out
 
 
 def closure(rules: dict[str, str], anchors: set[str]) -> set[str]:
@@ -264,7 +383,9 @@ def main() -> int:
         for n, b in grammar_rules(f.read_text(encoding="utf-8")).items():
             rules[n] = b
             origin[n] = f.name
-    print(f"grammar files scanned: {len(files)}   parser rules: {len(rules)}")
+    needed = required_tokens(rules)
+    print(f"grammar files scanned: {len(files)}   parser rules: {len(rules)}   "
+          f"rules demanding at least one token: {sum(1 for v in needed.values() if v)}")
 
     # ---- the spec side -----------------------------------------------------------------------------------
     formats = declared_formats(SPEC_MD.read_text(encoding="utf-8"))
@@ -313,13 +434,10 @@ def main() -> int:
         if not plain or not f.keyword:
             continue
         tok = f.keyword.replace("-", "_")
-        anchors = {n for n, b in rules.items()
-                   if re.search(r"(?<![A-Za-z0-9_])" + re.escape(tok) + r"(?![A-Za-z0-9_])", b)}
+        anchors = {n for n in rules if tok in needed[n]}
         for rule in sorted(closure(rules, anchors)):
-            body = rules[rule]
             for w in sorted(plain):
-                t = w.replace("-", "_")
-                if re.search(r"(?<![A-Za-z_])" + re.escape(t) + r"(?![A-Za-z_0-9])\s*(?!\?)", body):
+                if w.replace("-", "_") in needed[rule]:
                     print(f"  CANDIDATE  {f.keyword:<14} {f.clause:<12} p{heads[i].page:<5} "
                           f"{w:<12} required in {origin[rule]}#{rule}")
                     candidates += 1
