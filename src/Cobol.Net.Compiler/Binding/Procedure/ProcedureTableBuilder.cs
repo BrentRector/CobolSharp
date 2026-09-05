@@ -424,26 +424,29 @@ internal sealed class ProcedureTableBuilder(BinderContext ctx)
     /// <para>The boundary those rules draw is the STATEMENT, never the operand: §14.9.49.2 writes Format 1's
     /// file list as <c>{ file-name-1 } …</c> and Format 3's scope as
     /// <c>exception-name-2 { FILE file-name-2 } … …</c>, so ONE statement may name the same operand twice, and
-    /// one statement is never "more than one". Operands of the statement being bound are therefore staged apart
-    /// from the division's accumulated keys until <see cref="EndStatement"/> folds them in.</para></summary>
+    /// one statement is never "more than one". Each key therefore remembers the ORDINAL of the USE statement
+    /// that first specified it, and <see cref="EndStatement"/> is a counter bump: same ordinal ⇒ a repeat
+    /// inside one statement (legal), earlier ordinal ⇒ the repeat across statements the rule forbids.</para>
+    /// </summary>
     private sealed class UseOperandRegister<TKey>(IEqualityComparer<TKey>? comparer = null)
+        where TKey : notnull
     {
-        private readonly HashSet<TKey> _division = new(comparer);    // keys of the EARLIER USE statements
-        private readonly HashSet<TKey> _statement = new(comparer);   // keys of the statement being bound
+        private readonly Dictionary<TKey, int> _firstSeenIn = new(comparer);   // key → USE statement ordinal
+        private int _statement;
 
         /// <summary>Register one operand of the USE statement being bound.</summary>
         public UseOperand Register(TKey key)
-            => _division.Contains(key) ? UseOperand.Duplicate
-             : _statement.Add(key) ? UseOperand.First
-             : UseOperand.Repeated;
-
-        /// <summary>End the USE statement: its operands join the procedure division's.</summary>
-        public void EndStatement()
         {
-            if (_statement.Count == 0) return;
-            _division.UnionWith(_statement);
-            _statement.Clear();
+            if (!_firstSeenIn.TryGetValue(key, out int seenIn))
+            {
+                _firstSeenIn.Add(key, _statement);
+                return UseOperand.First;
+            }
+            return seenIn == _statement ? UseOperand.Repeated : UseOperand.Duplicate;
         }
+
+        /// <summary>End the USE statement — the next operand belongs to the next one.</summary>
+        public void EndStatement() => _statement++;
     }
 
     /// <summary>One USE statement's bound trigger scope: Format 1's files/mode (+GLOBAL), Format 2's report
