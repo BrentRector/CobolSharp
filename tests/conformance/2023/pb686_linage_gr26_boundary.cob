@@ -2,7 +2,7 @@
       *> the LINAGE-COUNTER exactly ON the page size.
       *>
       *> ⚖ THIS FIXTURE PINS AN ADJUDICATED DETERMINATION, NOT A
-      *> LITERAL RULE. docs/CONFORMANCE.md §7, "DETERMINATION — the
+      *> LITERAL RULE. docs/CONFORMANCE.md §4, "DETERMINATION — the
       *> §14.9.51.4 GR26 a)/b) boundary at LINAGE-COUNTER = page size"
       *> (kb/Work PB686). GR26's two arms, as PRINTED, cannot both be
       *> honoured at that one counter value; this fixture pins the
@@ -106,7 +106,25 @@
       *>      dispatch a FOOTING-only fixture cannot see.
       *>   N4 counter would be 5 > 4 — arm a), LC reads 001.
       *>
-      *> AN END-OF-PAGE WRITE IS A SUCCESSFUL WRITE, so the AT branch
+      *> PLN (FOOTING AT 3, driven by PLAIN WRITE statements) — THE
+      *> SECOND ENTRY POINT THAT CAN LAND ON THE BOUNDARY. A WRITE
+      *> with no ADVANCING phrase reaches the counter by a different
+      *> rule:
+      *>   python scripts/spec/cite.py --check 13.18.34.4 "When the
+      *>   ADVANCING phrase of the WRITE statement is not specified,
+      *>   the LINAGE-COUNTER is incremented by the value one."
+      *>                       -> OK  §13.18.34.4 7) a)
+      *> so P1..P4 must step 2, 3, 4, 1 and raise exactly what F1..F4
+      *> raise. The RECORD sits on a different physical line than it
+      *> does on FTG — §14.9.51.4 GR25 makes an omitted ADVANCING
+      *> phrase act as AFTER ADVANCING 1 LINE, and the connector
+      *> reaches that through its print path — but the end-of-page
+      *> condition is a function of the COUNTER, so the displayed
+      *> answers are identical. Asserting that identity is the point:
+      *> this repo's most reproducible defect is a dispatch with two
+      *> arms and only one of them fixed, and the boundary comparison
+      *> is reached from more than one WRITE entry point.
+      *>
       *> observes a completed write and the counter it left behind:
       *>   python scripts/spec/cite.py --check 14.9.51.4 "When an
       *>   end-of-page condition occurs, the WRITE statement is
@@ -127,19 +145,24 @@
        FILE-CONTROL.
            SELECT FTG ASSIGN TO "pb686b-f.prt".
            SELECT NFT ASSIGN TO "pb686b-n.prt".
+           SELECT PLN ASSIGN TO "pb686b-p.prt".
        DATA DIVISION.
        FILE SECTION.
        FD FTG LINAGE IS 4 LINES WITH FOOTING AT 3.
        01 F-REC PIC X(4).
        FD NFT LINAGE IS 4 LINES.
        01 N-REC PIC X(4).
+       FD PLN LINAGE IS 4 LINES WITH FOOTING AT 3.
+       01 P-REC PIC X(4).
        WORKING-STORAGE SECTION.
        01 LF PIC 9(3).
        01 LN PIC 9(3).
+       01 LP PIC 9(3).
        PROCEDURE DIVISION.
        MAIN-P.
            OPEN OUTPUT FTG.
            OPEN OUTPUT NFT.
+           OPEN OUTPUT PLN.
            MOVE LINAGE-COUNTER OF FTG TO LF.
            MOVE LINAGE-COUNTER OF NFT TO LN.
            DISPLAY "OPEN F=" LF " N=" LN.
@@ -199,6 +222,35 @@
            END-WRITE.
            MOVE LINAGE-COUNTER OF NFT TO LN.
            DISPLAY "N4 LC=" LN.
+           MOVE "IIII" TO P-REC.
+           WRITE P-REC
+               AT END-OF-PAGE DISPLAY "P1 EOP"
+               NOT AT END-OF-PAGE DISPLAY "P1 NO-EOP"
+           END-WRITE.
+           MOVE LINAGE-COUNTER OF PLN TO LP.
+           DISPLAY "P1 LC=" LP.
+           MOVE "JJJJ" TO P-REC.
+           WRITE P-REC
+               AT END-OF-PAGE DISPLAY "P2 EOP"
+               NOT AT END-OF-PAGE DISPLAY "P2 NO-EOP"
+           END-WRITE.
+           MOVE LINAGE-COUNTER OF PLN TO LP.
+           DISPLAY "P2 LC=" LP.
+           MOVE "KKKK" TO P-REC.
+           WRITE P-REC
+               AT END-OF-PAGE DISPLAY "P3 EOP"
+               NOT AT END-OF-PAGE DISPLAY "P3 NO-EOP"
+           END-WRITE.
+           MOVE LINAGE-COUNTER OF PLN TO LP.
+           DISPLAY "P3 LC=" LP.
+           MOVE "LLLL" TO P-REC.
+           WRITE P-REC
+               AT END-OF-PAGE DISPLAY "P4 EOP"
+               NOT AT END-OF-PAGE DISPLAY "P4 NO-EOP"
+           END-WRITE.
+           MOVE LINAGE-COUNTER OF PLN TO LP.
+           DISPLAY "P4 LC=" LP.
            CLOSE FTG.
            CLOSE NFT.
+           CLOSE PLN.
            STOP RUN.

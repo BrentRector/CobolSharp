@@ -3,7 +3,7 @@
       *>
       *> ⚖ THE DETERMINATION IS EDITION-INDEPENDENT, AND THIS FIXTURE
       *> IS WHAT MAKES THAT A MEASUREMENT RATHER THAN AN ASSERTION.
-      *> docs/CONFORMANCE.md §7, "DETERMINATION — the §14.9.51.4 GR26
+      *> docs/CONFORMANCE.md §4, "DETERMINATION — the §14.9.51.4 GR26
       *> a)/b) boundary at LINAGE-COUNTER = page size" (kb/Work PB686)
       *> resolves a contradiction between GR26's printed arms and
       *> §13.18.34.4 GR1/GR2/GR3/GR7. The 2023 twin carries the full
@@ -23,6 +23,12 @@
       *> line. The inventory rows GR-13.18.34.4-2, GR-13.18.34.4-3 and
       *> GR-14.9.51.4-26 all carry editions 85,2002,2014,2023; this
       *> fixture is the evidence for the 85 end of that claim.
+      *>
+      *> The PLN file repeats the FTG boundary through the PLAIN-WRITE
+      *> entry point (§13.18.34.4 GR7 c) 3 — an omitted ADVANCING
+      *> phrase increments the counter by one), because the boundary
+      *> comparison is reachable from more than one WRITE entry point
+      *> and a one-arm fix is this repo's most reproducible defect.
       *>
       *> EXPECTED VALUES. Byte-identical to the 2023 twin's .out apart
       *> from nothing at all — the same seventeen lines, derived from
@@ -44,19 +50,24 @@
        FILE-CONTROL.
            SELECT FTG ASSIGN TO "pb686b85-f.prt".
            SELECT NFT ASSIGN TO "pb686b85-n.prt".
+           SELECT PLN ASSIGN TO "pb686b85-p.prt".
        DATA DIVISION.
        FILE SECTION.
        FD FTG LINAGE IS 4 LINES WITH FOOTING AT 3.
        01 F-REC PIC X(4).
        FD NFT LINAGE IS 4 LINES.
        01 N-REC PIC X(4).
+       FD PLN LINAGE IS 4 LINES WITH FOOTING AT 3.
+       01 P-REC PIC X(4).
        WORKING-STORAGE SECTION.
        01 LF PIC 9(3).
        01 LN PIC 9(3).
+       01 LP PIC 9(3).
        PROCEDURE DIVISION.
        MAIN-P.
            OPEN OUTPUT FTG.
            OPEN OUTPUT NFT.
+           OPEN OUTPUT PLN.
            MOVE LINAGE-COUNTER OF FTG TO LF.
            MOVE LINAGE-COUNTER OF NFT TO LN.
            DISPLAY "OPEN F=" LF " N=" LN.
@@ -116,6 +127,35 @@
            END-WRITE.
            MOVE LINAGE-COUNTER OF NFT TO LN.
            DISPLAY "N4 LC=" LN.
+           MOVE "IIII" TO P-REC.
+           WRITE P-REC
+               AT END-OF-PAGE DISPLAY "P1 EOP"
+               NOT AT END-OF-PAGE DISPLAY "P1 NO-EOP"
+           END-WRITE.
+           MOVE LINAGE-COUNTER OF PLN TO LP.
+           DISPLAY "P1 LC=" LP.
+           MOVE "JJJJ" TO P-REC.
+           WRITE P-REC
+               AT END-OF-PAGE DISPLAY "P2 EOP"
+               NOT AT END-OF-PAGE DISPLAY "P2 NO-EOP"
+           END-WRITE.
+           MOVE LINAGE-COUNTER OF PLN TO LP.
+           DISPLAY "P2 LC=" LP.
+           MOVE "KKKK" TO P-REC.
+           WRITE P-REC
+               AT END-OF-PAGE DISPLAY "P3 EOP"
+               NOT AT END-OF-PAGE DISPLAY "P3 NO-EOP"
+           END-WRITE.
+           MOVE LINAGE-COUNTER OF PLN TO LP.
+           DISPLAY "P3 LC=" LP.
+           MOVE "LLLL" TO P-REC.
+           WRITE P-REC
+               AT END-OF-PAGE DISPLAY "P4 EOP"
+               NOT AT END-OF-PAGE DISPLAY "P4 NO-EOP"
+           END-WRITE.
+           MOVE LINAGE-COUNTER OF PLN TO LP.
+           DISPLAY "P4 LC=" LP.
            CLOSE FTG.
            CLOSE NFT.
+           CLOSE PLN.
            STOP RUN.
