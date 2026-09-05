@@ -316,6 +316,40 @@ public sealed class SequentialFileIoSpecTests
         Assert.Contains(warnings, x => x.Contains("COBOLNET1720") && x.Contains("NOT INVALID KEY"));
     }
 
+    /// <summary>The same transfer with NO FILE STATUS clause on the file — the axis every other test here holds
+    /// fixed. §9.1.14 speaks of "the I-O status of the file connector associated with the statement", not of the
+    /// program's FILE STATUS item, and the two are different code paths: <c>EmitStoreFileStatus</c> returns
+    /// immediately when there is no FILE STATUS clause, so a NOT-arm branch that read the user's status item
+    /// would go dead here and nowhere else. The branch reads the CONNECTOR, so it still runs.</summary>
+    [Fact]
+    public void Permissive_SequentialWriteInvalidKey_NotArmRunsWithoutAFileStatusClause()
+    {
+        const string prog = """
+            IDENTIFICATION DIVISION.
+            PROGRAM-ID. PB691NOSTAT.
+            ENVIRONMENT DIVISION.
+            INPUT-OUTPUT SECTION.
+            FILE-CONTROL.
+                SELECT F ASSIGN "pb691ns.dat" ORGANIZATION SEQUENTIAL.
+            DATA DIVISION.
+            FILE SECTION.
+            FD F.
+            01 REC PIC X(4).
+            PROCEDURE DIVISION.
+            MAIN.
+                OPEN OUTPUT F.
+                MOVE "AAAA" TO REC.
+                WRITE REC
+                    INVALID KEY DISPLAY "W-IK"
+                    NOT INVALID KEY DISPLAY "W-NIK"
+                END-WRITE.
+                DISPLAY "DONE".
+                CLOSE F.
+                STOP RUN.
+            """;
+        Assert.Equal("W-NIK\nDONE", RunAt(prog, 2023, permissive: true).Stdout);
+    }
+
     /// <summary>The screen is a REJECTION at every edition on the strict axis — the fixtures
     /// <c>write-invalid-key-sequential-org</c> / <c>write-not-invalid-key-sequential-org</c> assert the code, and
     /// this asserts the edition SWEEP (a gate landed on one edition breaks or misses the other three —
