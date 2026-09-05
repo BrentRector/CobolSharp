@@ -192,8 +192,12 @@ public static class BoundStores
                     : StoreKind.None;
 
         // ── File I/O (FILE STATUS / record-area stores route through FileModel — never the temp) ─────────
+        // The conditional-phrase recursion is TOTAL over the node's phrase bodies, so the sequential WRITE's
+        // §9.1.14 pair (bound under --permissive only — kb/Work PB691) is walked exactly as BoundKeyedWrite's is;
+        // the two arms of one verb may not disagree about which bodies exist (feedback_two_arm_dispatch).
         public StoreKind? Visit(BoundWrite n) => StoreOrKids(n.From is not null && Hit(n.Record),
-            StoreKind.ReadWrite, n.AtEop, n.NotAtEop);                 // FROM-move then read as the image
+            StoreKind.ReadWrite, n.AtEop, n.NotAtEop,                  // FROM-move then read as the image
+            n.InvalidKey?.Invalid, n.InvalidKey?.NotInvalid);
         public StoreKind? Visit(BoundRead n) => StoreOrKids(Hit(n.Into), StoreKind.Write, n.AtEnd, n.NotAtEnd);
         public StoreKind? Visit(BoundRewrite n) => n.From is not null && Hit(n.Record) ? StoreKind.ReadWrite : StoreKind.None;
         public StoreKind? Visit(BoundKeyedRead n) => StoreOrKids(Hit(n.Into), StoreKind.Write,

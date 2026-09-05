@@ -335,8 +335,11 @@ internal sealed class KeyedIoBinder(BinderContext ctx, StatementBinder host, Fil
     // ── Shared keyed-I/O helpers ───────────────────────────────────────────────────────────────────────────────
 
     /// <summary>Build the INVALID/NOT INVALID pair from the phrase's statement blocks — the shared two-branch
-    /// shape via the ONE <see cref="PhraseBlocks.Split"/> extractor (P7 Step 10b).</summary>
-    private KeyedInvalidKey KeyedInvalidPhrase(Core.StatementBlockContext[] blocks, bool notFirst)
+    /// shape via the ONE <see cref="PhraseBlocks.Split"/> extractor (P7 Step 10b). Internal because the
+    /// SEQUENTIAL arm binds the pair too: §14.9.51.3 SR2 forbids the phrase on a sequential-organization WRITE,
+    /// but <c>--permissive</c> accepts it and §9.1.14 still governs what it MEANS, so both binders build the
+    /// node here rather than each writing the split out (kb/Work PB691).</summary>
+    internal KeyedInvalidKey KeyedInvalidPhrase(Core.StatementBlockContext[] blocks, bool notFirst)
     {
         var (inv, not) = PhraseBlocks.Split(blocks, notFirst, b => host.BindBlocks([b]));
         return new KeyedInvalidKey(inv, not);

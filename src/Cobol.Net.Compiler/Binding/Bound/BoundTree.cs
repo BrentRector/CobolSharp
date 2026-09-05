@@ -971,6 +971,15 @@ public sealed record BoundWrite(FileModel File, Place Record, BoundOperand? From
     /// AFTER phrase, and the record is presented once at the current line then advanced by BOTH amounts (both after
     /// presentation). PAGE is forbidden in the combined form (SR17). Null = the classic single-phrase WRITE.</summary>
     public BoundAdvancing? AfterAdvancing { get; init; }
+    /// <summary>The <c>INVALID KEY</c> / <c>NOT INVALID KEY</c> pair, which ISO §14.9.51.3 SR2 FORBIDS on a
+    /// sequential-organization WRITE ("If the organization of the write file is sequential, format 1 shall be
+    /// specified", and Format 1 of §14.9.51.2 carries no INVALID KEY bracket) — so it is non-null ONLY under
+    /// <c>--permissive</c>, where the COBOLNET1720 screen warns and the bind stands (kb/Work PB691). It is
+    /// carried rather than dropped because §9.1.14's final rule item 2 gives the NOT INVALID KEY imperative a
+    /// LIVE meaning here — it runs on a successful completion — while the INVALID arm is provably dead: every
+    /// invalid-key status (§9.1.13.5, '21'–'24') names a relative or indexed file. Null = the legal Format-1
+    /// WRITE, which is every WRITE the strict compiler accepts on this organization.</summary>
+    public KeyedInvalidKey? InvalidKey { get; init; }
 }
 
 /// <summary><c>READ file [NEXT] [INTO x] [AT END …][NOT AT END …]</c> (ISO §14.9.30): a sequential read that
