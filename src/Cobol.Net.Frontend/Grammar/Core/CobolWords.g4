@@ -104,7 +104,7 @@ cobolWord
     | STANDARD_DECIMAL
     | STATEMENT
     | UNDERLINE_
-    | UNLOCK
+    | {!reservedHere("UNLOCK")}? UNLOCK
     | VALID
     | VALIDATE
     | VALIDATE_STATUS
@@ -121,4 +121,5 @@ reservedGatedWord
     | {reservedHere("CURSOR")}? CURSOR
     | {reservedHere("PADDING")}? PADDING
     | {reservedHere("ROLLBACK")}? ROLLBACK
+    | {reservedHere("UNLOCK")}? UNLOCK
     ;

@@ -622,7 +622,8 @@
    "token": "UNLOCK",
    "nameSlot": true,
    "subscriptTrigger": true,
-   "note": "the UNLOCK statement (14.9.47, 2002+): a user word below 2002, funnel-0901'd >=2002"
+   "note": "the UNLOCK statement (14.9.47, 2002+): a user word below 2002, funnel-0901'd >=2002. RESERVATION-GATED (kb/Work PB693): ISO 8.9 reserves the word at 2002/2014/2023, and 8.3.2.1 rule 1 (reserved words shall not be used as user-defined words or system-names) therefore bars it from the user-defined-word slot there - the generator emits `{!reservedHere(\"UNLOCK\")}?` on the cobolWord alternative so no operand list can absorb the word at those editions, and the reservedGatedWord twin re-admits it in dataName so a DECLARATION still draws the named COBOLNET0901 instead of a parse error.",
+   "reservationGated": true
   },
   {
    "token": "VALID",
