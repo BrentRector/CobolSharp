@@ -681,8 +681,15 @@ startKeyPhrase
     : KEY IS? comparisonOperator? dataReference (startWithLength)?   // WITH LENGTH introduction-gated at BIND time (StatementBinder.KeyedIo → Check(StartWithLength2002))
     ;
 
+// ISO §14.9.41.2 prints `[ WITH LENGTH arithmetic-expression-1 ]` with LENGTH underlined and WITH NOT
+// underlined (measured off the vector rectangles — `figure_extract.py 784` → `[ WITH _LENGTH_ … ]`, confirmed on
+// the 600 dpi render of PDF page 784 / printed folio 754; the transcription's own figure note says the same).
+// §5.2.3 makes a non-underlined uppercase word an OPTIONAL word that "may be written to add clarity", so
+// `START f KEY IS >= K LENGTH 3` is conforming source; it was rejected `COBOL0001: missing token before '3'`
+// with a COBOL0306/COBOL0307 cascade behind it until kb/Work PB332. The whole PHRASE stays optional at its use
+// site — that is the printed bracket — and LENGTH remains required inside it.
 startWithLength
-    : WITH LENGTH arithmeticExpression
+    : WITH? LENGTH arithmeticExpression
     ;
 
 // ISO 5.2.6.4: the positive and negative phrases are enclosed in CHOICE INDICATORS (| bars inside the
