@@ -546,7 +546,7 @@ internal sealed class ProcedureTableBuilder(BinderContext ctx)
             if (file.IsSortMerge)
             {
                 ctx.Edition.Error("COBOLNET0897", $"declarative section '{sectionName}': USE may not name the "
-                    + $"sort/merge file '{fname}' (ISO §14.9.49 SR2)");
+                    + $"sort/merge file '{fname}' (ISO §14.9.49.3 SR2)");
                 continue;
             }
             // SR8: "The same file-name shall not appear in more than one USE AFTER EXCEPTION statement within
