@@ -34,10 +34,15 @@ internal enum ConstructOperand
 /// <see cref="EndConstruct"/> is a counter bump: the same ordinal ⇒ this construct has already registered the
 /// operand (a repeat inside one construct — legal and already bound — or a second occurrence of a violation this
 /// construct has already been told about), an earlier ordinal ⇒ the repeat across constructs the rule forbids.
-/// Remembering the LAST rather than the FIRST construct is what keeps ONE violation to ONE diagnostic: with the
-/// first-seen ordinal, <c>USE … ON F F</c> in a second USE statement and
-/// <c>COLLATING SEQUENCE OF K K</c> in a second clause each reported their rule TWICE (measured on 8ef11ec8),
-/// because both occurrences compared against the ordinal of the construct that first specified the key.</para>
+/// Remembering the LAST rather than the FIRST construct is what keeps ONE violation to ONE diagnostic: under a
+/// first-seen ordinal BOTH writes of <c>USE … ON F F</c> in a second USE statement — and both of
+/// <c>COLLATING SEQUENCE OF K K</c> in a second clause — compare against the ordinal of the construct that FIRST
+/// specified the key, so the rule is reported TWICE for one violation. That is a measurement, not a reading:
+/// flipping <see cref="Register"/> back to first-seen turns all seven
+/// <c>conformance:*_DiagnosedOnce</c> rows red at once
+/// (<c>ExceptionConditionConformanceTests.UseF1_SameFileRepeatedInTheSecondStatement_DiagnosedOnce</c> ×4 editions,
+/// <c>FileCollatingSequenceSpecTests.KeyLevel_SameKeyRepeatedInTheSecondClause_DiagnosedOnce</c> ×3) — fired red
+/// on 2026-09-05 before this line was written.</para>
 /// <para>Consumers (add the next one here — this list is the reason the type is shared, not private):</para>
 /// <list type="bullet">
 ///   <item><description><c>ProcedureTableBuilder</c> — ISO §14.9.49.3 SR7 (open modes: "may each be specified
