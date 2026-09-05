@@ -372,30 +372,19 @@ internal sealed class SequentialIoEmitter(EmitContext ctx, NumericRenderer num, 
         if (wr.From is { } from) move.Emit(new BoundMove(from, [wr.Record]));
         string name = FileKeyExpr(wr.File);
         string image = OperandText.RecordAreaImage(wr.Record);   // THE ONE record-area channel (kb/Work PB327)
-        if (wr.AfterAdvancing is { } aft && wr.Advancing is { } bfr)
-        {
-            // COBOL-2023 combined BEFORE AND AFTER ADVANCING (§14.9.51 GR25e/GR25f): present the line at the current
-            // position, then advance by the BEFORE amount and by the AFTER amount (both after presentation; SR17
-            // forbids PAGE, so neither is a form feed). LINAGE-COUNTER increments by before+after.
-            w.Line($"{RuntimeApi.FileWriteBeforeAndAfter(name, image, LinesExpr(bfr.Lines!), LinesExpr(aft.Lines!), LinageArg(wr.File))};");
-        }
-        else if (wr.Advancing is { } adv)
-        {
-            // Print-control writes keep the plain entry: an ADVANCING stream is a presentation surface, not a
-            // record store — its lines carry no record-lock identity (§9.1.16 locks LOGICAL RECORDS).
-            string lines = adv.Page ? "-1" : LinesExpr(adv.Lines!);
-            w.Line($"{RuntimeApi.FileWriteAdvancing(name, image, lines, adv.Before ? "true" : "false", LinageArg(wr.File))};");
-        }
-        else
-        {
-            // §9.1.16/§14.9.51 GR10-GR11 (P10 Step 8): the governed WRITE — single locking releases the
-            // connector's prior lock, WITH LOCK locks the record written. Status lands on the connector.
-            // UNCONDITIONAL (kb/Work PB683): the runtime falls through to the plain body for a connector that
-            // is not sharing-active, which is the same decision made where the OPEN's phrase is visible.
-            var (retryKind, retryAmount) = RenderRetry(wr.Retry);
-            string lenArg = VaryingLengthArg(wr.File) ?? "-1";
-            w.Line($"{RuntimeApi.FileWriteShared(name, image, lenArg, RuntimeRecordLock(wr.Lock), retryKind, retryAmount, LinageArg(wr.File))};");
-        }
+        // ⛔ ONE CALL FOR EVERY WRITE SHAPE (kb/Work PB683). §9.1.16/§14.9.51 GR10-GR11 (P10 Step 8): the governed
+        // WRITE — single locking releases the connector's prior lock, WITH LOCK locks the record written — and
+        // both are ALL FILES rules, so the ADVANCING phrases are the statement's PRESENTATION shape and travel
+        // as an argument, never as a choice of runtime entry. This used to be a three-arm dispatch whose two
+        // print-control arms rendered `WriteAdvancing`/`WriteBeforeAndAfter`, which have no lock or RETRY
+        // parameter, so `WRITE R AFTER ADVANCING 1 LINE WITH LOCK RETRY 5 TIMES` — one legal statement of
+        // §14.9.51.2's Format 1, which prints the ADVANCING phrase, the retry-phrase and the WITH LOCK bracket
+        // together — silently dropped both phrases. UNCONDITIONAL: the runtime falls through to the same plain
+        // body for a connector that is not sharing-active, which is the decision made where the OPEN's own
+        // SHARING phrase is visible (§9.1.15). Status lands on the connector either way.
+        var (retryKind, retryAmount) = RenderRetry(wr.Retry);
+        string lenArg = VaryingLengthArg(wr.File) ?? "-1";
+        w.Line($"{RuntimeApi.FileWriteShared(name, image, lenArg, RuntimeRecordLock(wr.Lock), retryKind, retryAmount, LinageArg(wr.File), AdvanceArg(wr))};");
         EmitStoreFileStatus(wr.File);
         EmitUseHook(wr.File);
         // END-OF-PAGE branches (ISO §14.9.51 GR27b/GR28): an end-of-page WRITE is SUCCESSFUL — the branch runs
@@ -412,6 +401,22 @@ internal sealed class SequentialIoEmitter(EmitContext ctx, NumericRenderer num, 
                 using (w.Block("else"))
                     Statements.EmitStatementList(not);
         }
+    }
+
+    /// <summary>The ADVANCING phrases of ONE WRITE statement as the runtime's <c>WriteAdvance</c> descriptor
+    /// (ISO §14.9.51.2 Format 1 — the print-control bracket). Three shapes, one argument: no phrase; a single
+    /// BEFORE/AFTER phrase, whose <c>-1</c> line count is ADVANCING PAGE; and COBOL-2023's combined
+    /// <c>BEFORE ADVANCING n AFTER ADVANCING m</c> (§14.9.51.4 GR25 e/f), where the record is presented once at
+    /// the current line and the medium then advances by both amounts (SR17 forbids PAGE there, so neither is a
+    /// form feed) and LINAGE-COUNTER increments by n+m.</summary>
+    private string AdvanceArg(BoundWrite wr)
+    {
+        if (wr.AfterAdvancing is { } aft && wr.Advancing is { } bfr)
+            return $"new WriteAdvance(WriteAdvanceKind.BeforeAndAfter, {LinesExpr(bfr.Lines!)}, {LinesExpr(aft.Lines!)})";
+        if (wr.Advancing is { } adv)
+            return $"new WriteAdvance(WriteAdvanceKind.{(adv.Before ? "Before" : "After")}, "
+                + $"{(adv.Page ? "-1" : LinesExpr(adv.Lines!))}, 0)";
+        return "WriteAdvance.None";
     }
 
     /// <summary>Render the governed sequential-organization READ call (§14.9.30.4 GR9–GR12 over the ordinal lock
