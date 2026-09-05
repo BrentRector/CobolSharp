@@ -146,8 +146,16 @@ programIdParagraph
     : PROGRAM_ID DOT programName externalizedNamePhrase? (IS? programIdAttributes PROGRAM?)? DOT
     ;
 
+// §11.4.2 program-name-1 is a user-defined word (§8.3.2.2). The `reservedGatedWord` alternative is the
+// DECLARATION re-admission the reservation gate needs (kb/Work PB693, the dataName precedent): a §8.9-reserved
+// word is gated OUT of cobolWord at the editions that reserve it, so without this `PROGRAM-ID. UNLOCK.` at
+// --std 2002 answers a raw COBOL0001 "no viable alternative" instead of the targeted COBOLNET0901 that names
+// §8.9 — and this slot is one of the four IsProvableUserWordPosition definition slots the funnel screens.
+// The two alternatives carry EXACTLY INVERSE predicates, so at most one can match: no ambiguity, and the
+// slot's grammar (PROGRAM-ID DOT <word>) admits no competing production.
 programName
     : cobolWord
+    | reservedGatedWord
     ;
 
 programIdAttributes
