@@ -314,15 +314,18 @@ internal sealed class SequentialIoEmitter(EmitContext ctx, NumericRenderer num, 
         _ => "FileRecordLock.None",
     };
 
-    /// <summary>The ONE lock-relevance predicate (§9.1.16): a statement routes through the runtime's governed
-    /// verb entry when its file declares SHARING or LOCK MODE, or the statement itself carries a lock-retention
-    /// phrase, an IGNORING LOCK phrase or a RETRY phrase. Everything else keeps the plain entry — the
-    /// pre-sharing emission byte-for-byte. (<paramref name="ignoringLock"/> defaults false for the verbs whose
-    /// printed formats have no such phrase — WRITE, REWRITE and DELETE.)</summary>
-    public static bool LockGoverned(FileModel file, BoundRecordLock lockPhrase, RetrySpec? retry,
-        bool ignoringLock = false) =>
-        file.Sharing != SharingMode.None || file.LockMode is not null
-        || lockPhrase != BoundRecordLock.None || retry is not null || ignoringLock;
+    // ⛔ THERE IS NO COMPILE-TIME LOCK-GOVERNANCE PREDICATE, AND THERE MUST NEVER BE ONE AGAIN (kb/Work PB683).
+    // Whether a connector is open FOR FILE SHARING is a RUN-TIME fact: ISO §9.1.15 — "The SHARING phrase on an
+    // OPEN statement overrides the SHARING clause in the file control entry for establishing the sharing mode"
+    // — so `OPEN INPUT SHARING WITH READ ONLY F` makes F a sharing participant whatever its SELECT says, and no
+    // property of the file control entry or of the READ/WRITE/REWRITE/DELETE statement can see it. The emitter
+    // used to guess it from (SHARING clause | LOCK MODE clause | the statement's own lock/RETRY/IGNORING
+    // phrases) and routed every unphrased verb on such a connector to the UNGOVERNED entry, which reads a record
+    // another connector has locked with '00' where §14.9.30.4 GR9/GR10 b) require the record operation conflict
+    // status '51' — and writing `RETRY 0 TIMES`, a behavioural no-op by §14.7.9.3 GR4 a), flipped the answer.
+    // Every record verb now renders its GOVERNED runtime entry unconditionally; FileRegistry's
+    // `_connectorShares` probe is the ONE place governance is decided, one layer below, where the OPEN's own
+    // phrase has already been recorded. The ungoverned entries no longer exist to route to.
 
     public void EmitClose(BoundClose c)
     {
@@ -383,16 +386,16 @@ internal sealed class SequentialIoEmitter(EmitContext ctx, NumericRenderer num, 
             string lines = adv.Page ? "-1" : LinesExpr(adv.Lines!);
             w.Line($"{RuntimeApi.FileWriteAdvancing(name, image, lines, adv.Before ? "true" : "false", LinageArg(wr.File))};");
         }
-        else if (LockGoverned(wr.File, wr.Lock, wr.Retry))
+        else
         {
             // §9.1.16/§14.9.51 GR10-GR11 (P10 Step 8): the governed WRITE — single locking releases the
             // connector's prior lock, WITH LOCK locks the record written. Status lands on the connector.
+            // UNCONDITIONAL (kb/Work PB683): the runtime falls through to the plain body for a connector that
+            // is not sharing-active, which is the same decision made where the OPEN's phrase is visible.
             var (retryKind, retryAmount) = RenderRetry(wr.Retry);
             string lenArg = VaryingLengthArg(wr.File) ?? "-1";
             w.Line($"{RuntimeApi.FileWriteShared(name, image, lenArg, RuntimeRecordLock(wr.Lock), retryKind, retryAmount, LinageArg(wr.File))};");
         }
-        else
-            w.Line($"{RuntimeApi.FileWrite(name, image, VaryingLengthArg(wr.File), LinageArg(wr.File))};");
         EmitStoreFileStatus(wr.File);
         EmitUseHook(wr.File);
         // END-OF-PAGE branches (ISO §14.9.51 GR27b/GR28): an end-of-page WRITE is SUCCESSFUL — the branch runs
@@ -458,13 +461,12 @@ internal sealed class SequentialIoEmitter(EmitContext ctx, NumericRenderer num, 
         // The read record is made available in the WHOLE record area — store through the LARGEST record's view
         // (FileModel.AreaRecord, ISO §13.4.2); a shorter Records[0] window would truncate the splice (ST111A).
         Place? area = rd.File.AreaRecord is { } ar ? refs.ResolveItem(ar) : null;
-        // §9.1.16 record locking on the sequential organization (P10 Step 8): a lock-relevant READ routes
-        // through the governed runtime entry — the next ordinal's pre-read conflict check (§14.9.30 GR9,
-        // FPI unchanged on a 51 per GR10a), the GR11 lock discipline, and GR22 ADVANCING ON LOCK skip-scan.
-        // Same bool contract as the plain read, so the two branches below are shared.
-        string readCall = LockGoverned(rd.File, rd.Lock, rd.Retry, rd.IgnoringLock)
-            ? EmitReadSharedCall(rd, name, tmp)
-            : RuntimeApi.FileRead(name, tmp);
+        // §9.1.16 record locking on the sequential organization (P10 Step 8): EVERY READ routes through the
+        // governed runtime entry — the next ordinal's pre-read conflict check (§14.9.30 GR9, FPI unchanged on a
+        // 51 per GR10a), the GR11 lock discipline, and the GR22 ADVANCING ON LOCK skip-scan. Unconditional
+        // (kb/Work PB683): the runtime falls through to the plain retrieval for a connector that is not
+        // sharing-active, and only the runtime can see an OPEN statement's own SHARING phrase (§9.1.15).
+        string readCall = EmitReadSharedCall(rd, name, tmp);
         using (w.Block($"if ({readCall})"))
         {
             if (area is not null) EmitImageInto(area, tmp);
@@ -496,17 +498,13 @@ internal sealed class SequentialIoEmitter(EmitContext ctx, NumericRenderer num, 
         if (rw.Unsupported is { } u) { w.Line(LoudStmt(u)); return; }
         if (rw.From is { } from) move.Emit(new BoundMove(from, [rw.Record]));
         string image = OperandText.RecordAreaImage(rw.Record);   // THE ONE record-area channel (kb/Work PB327)
-        // §9.1.16/§14.9.35 GR11-GR12 (P10 Step 8): a lock-relevant sequential REWRITE routes through the
-        // governed runtime entry — the pre-operation conflict check on the last-read record (51 leaves the
-        // record unrewritten) and the GR12 lock discipline. The status lands on the connector either way.
-        if (LockGoverned(rw.File, rw.Lock, rw.Retry))
-        {
-            var (retryKind, retryAmount) = RenderRetry(rw.Retry);
-            string lenArg = VaryingLengthArg(rw.File) ?? "-1";
-            w.Line($"{RuntimeApi.FileRewriteShared(FileKeyExpr(rw.File), image, lenArg, RuntimeRecordLock(rw.Lock), retryKind, retryAmount)};");
-        }
-        else
-            w.Line($"{RuntimeApi.FileRewrite(FileKeyExpr(rw.File), image, VaryingLengthArg(rw.File))};");
+        // §9.1.16/§14.9.35 GR11-GR12 (P10 Step 8): EVERY sequential REWRITE routes through the governed runtime
+        // entry — the pre-operation conflict check on the last-read record (51 leaves the record unrewritten)
+        // and the GR12 lock discipline. Unconditional (kb/Work PB683): the runtime falls through to the plain
+        // body for a connector that is not sharing-active. The status lands on the connector either way.
+        var (retryKind, retryAmount) = RenderRetry(rw.Retry);
+        string rwLenArg = VaryingLengthArg(rw.File) ?? "-1";
+        w.Line($"{RuntimeApi.FileRewriteShared(FileKeyExpr(rw.File), image, rwLenArg, RuntimeRecordLock(rw.Lock), retryKind, retryAmount)};");
         EmitStoreFileStatus(rw.File);
         EmitUseHook(rw.File);
     }
