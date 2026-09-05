@@ -2,6 +2,7 @@
 // Licensed under the Business Source License 1.1. See LICENSE file in the project root.
 using Antlr4.Runtime;
 using CobolNet.Frontend.Common;
+using CobolNet.Frontend.Generated;
 using CobolNet.Frontend.Diagnostics;
 
 namespace CobolNet.Frontend.Parsing;
@@ -47,6 +48,19 @@ public sealed class CobolErrorListener(DiagnosticBag diagnostics, string sourceP
                 code = msg[1..closeBracket];
                 message = msg[(closeBracket + 1)..].TrimStart();
             }
+        }
+
+        // ⛔ THE §8.9 ARM (kb/Work PB693). A syntax error ON a reservation-gated word IS the §8.9 violation: the
+        // gate is precisely why no user-defined-word alternative could match, and a REFERENCE to the word never
+        // reaches the bound-tree funnel because the source did not parse. Report the targeted COBOLNET0901 so the
+        // cause is NAMED, rather than "no viable alternative at input 'X'". The parser owns the test (it holds the
+        // edition, the >>COBOL-WORDS overlay and the generated gate set); this stage only re-codes the
+        // diagnostic, and the message has ONE definition in ReservedWordSet.
+        if (recognizer is CobolParserCoreBase parser
+            && parser.ReservedUserWordViolation(offendingSymbol) is { } reservedWordMessage)
+        {
+            code = CobolNet.Editions.EditionCodes.ReservedWord;
+            message = reservedWordMessage;
         }
 
         // ANTLR's `line` is 1-based and counts the RESULTANT text (after COPY / REPLACE / continuation joins);
