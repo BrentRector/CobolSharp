@@ -799,7 +799,9 @@
   "pb331-rewrite-ignoring-lock",
   "pb331-read-record-word-twice",
   "pb340-advancing-on-lock-keyed-85",
-  "pb340-advancing-on-lock-sequential-85"
+  "pb340-advancing-on-lock-sequential-85",
+  "l1-use-sr8-file-in-two-statements",
+  "l1-use-sr14-pair-in-two-statements"
  ],
  "pending": []
 }
