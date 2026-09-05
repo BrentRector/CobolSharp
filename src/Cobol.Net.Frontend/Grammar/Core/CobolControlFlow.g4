@@ -281,8 +281,10 @@ alterEntry
 // the two words the CCVS witnesses happened to omit. The corpus is a regression net, never the authority.
 //
 // ⛔ FORMAT ORDER IS LOAD-BEARING, and only because AFTER became optional. `useOnTarget`'s `fileName+` arm
-// accepts any cobolWord, and CONDITION / EC / OBJECT / EO are context-sensitive words (§8.3.1.2) that
-// `cobolWord` admits, so `USE EXCEPTION CONDITION EC-ALL` can be read as Format 1 over two file-names. The
+// accepts any cobolWord, and CONDITION / EC / OBJECT / EO are context-sensitive words — §8.10 lists them and
+// makes such a word "reserved in the specified language construct or context … otherwise it is treated as a
+// user-defined word", which is exactly what `cobolWord` admits — so `USE EXCEPTION CONDITION EC-ALL` can be
+// read as Format 1 over two file-names. The
 // specific formats are therefore listed FIRST and ANTLR's first-match-wins prediction settles it; Format 1
 // still claims `USE EXCEPTION F1` unambiguously, because Formats 3 and 4 demand CONDITION/EC/OBJECT/EO right
 // after EXCEPTION and Format 3 demands at least one entry after them.
