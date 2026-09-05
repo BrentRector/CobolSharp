@@ -2188,8 +2188,7 @@ internal sealed class VersionConformancePass
             _p._sink.Report(new EditionDiagnostic(EditionCodes.ReservedWord,
                 EditionSeverityPolicy.For(_reservedWords.UserWordVerdictAt(word, _p._edition.Year), _p._edition),
                 "edition-reserved-word",
-                $"'{word}' is a reserved word in COBOL-{_p._edition.Year} and cannot be used as a "
-                + "user-defined word (ISO §8.9)", "", "ISO §8.9"));
+                ReservedWordSet.UserWordViolationMessage(word, _p._edition.Year), "", "ISO §8.9"));
         }
 
         /// <summary>kb/Work PB137/PB300/PB693: the generated <c>reservedGatedWord</c> rule keeps a DECLARATION of

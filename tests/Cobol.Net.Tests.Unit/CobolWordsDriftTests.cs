@@ -44,7 +44,7 @@ public sealed class CobolWordsDriftTests
     }
 
     /// <summary>⛔ THE DERIVED RESERVATION GATE (kb/Work PB693). The set of <c>cobolWord</c> alternatives that
-    /// MUST carry <c>{!reservedHere("W")}?</c>, computed here the way <c>gen-cobol-words.ps1</c> step 4b computes
+    /// MUST carry <c>{userWordHere("W")}?</c>, computed here the way <c>gen-cobol-words.ps1</c> step 4b computes
     /// it: a name-slot word that ISO §8.9 reserves at ANY edition. §8.3.2.1 rule 1 — "Reserved words shall not be
     /// used as user-defined words or system-names" — and <c>cobolWord</c> IS the user-defined-word slot, so an
     /// ungated admission lets an operand list absorb the word at the editions that reserve it.
@@ -54,11 +54,36 @@ public sealed class CobolWordsDriftTests
     private static HashSet<string> DerivedGateSet()
     {
         var reserved = LoadReservedIntervals();
+        var functionNames = FunctionNameTokens();
         return LoadJsonWords()
-            .Where(w => w.NameSlot && w.Token != "IDENTIFIER")
+            .Where(w => w.NameSlot && w.Token != "IDENTIFIER" && !functionNames.Contains(w.Token))
             .Where(w => reserved.TryGetValue(ToWord(w.Token), out var f) && f.Contains(true))
             .Select(w => w.Token)
             .ToHashSet(StringComparer.Ordinal);
+    }
+
+    /// <summary>The single-token alternatives of the grammar's <c>functionName</c> rule — the §15 intrinsic
+    /// function names that collide with a reserved word. They are the gate's ONE exclusion (kb/Work PB693): a
+    /// <c>cobolWord</c> occurrence of one is the KEYWORD-OMITTED function reference §15 permits
+    /// (<c>COMPUTE N = LENGTH(A)</c>), a use OF the reserved word rather than a user-defined-word use, and gating
+    /// them turned five conforming 2023 goldens into COBOL0001. Read from the grammar, not listed here, so the
+    /// exclusion cannot drift from the rule it is about.</summary>
+    private static HashSet<string> FunctionNameTokens()
+    {
+        string path = TestRepo.Src("Cobol.Net.Frontend", "Grammar", "Core", "CobolExpressions.g4");
+        Assert.True(File.Exists(path), $"grammar missing: {path}");
+        var alts = new HashSet<string>(StringComparer.Ordinal);
+        bool inRule = false;
+        foreach (var raw in File.ReadAllLines(path))
+        {
+            string line = raw.Trim();
+            if (line == "functionName") { inRule = true; continue; }
+            if (!inRule) continue;
+            if (line == ";") break;
+            if (Regex.Match(line, @"^[:|]\s*([A-Z][A-Z0-9_]*)\s*$") is { Success: true } m) alts.Add(m.Groups[1].Value);
+        }
+        Assert.True(alts.Count >= 2, $"the functionName rule yielded {alts.Count} tokens — the parse broke");
+        return alts;
     }
 
     /// <summary>The parser's generated <c>cobolWord</c> alternatives equal the JSON <c>nameSlot=true</c> tokens.</summary>
@@ -83,8 +108,8 @@ public sealed class CobolWordsDriftTests
     /// <para>The gate was a hand-set <c>reservationGated</c> JSON flag; it is now DERIVED by
     /// <c>gen-cobol-words.ps1</c> step 4b from <c>reserved-words.json</c> (CLAUDE.md rule 5 — never a
     /// hand-maintained list where a structure belongs). This test recomputes the derivation independently and
-    /// pins BOTH halves of the emitted gate: <c>cobolWord</c> under <c>{!reservedHere("W")}?</c> (a user word
-    /// exactly where §8.9 leaves it free) and <c>reservedGatedWord</c> under <c>{reservedHere("W")}?</c> (a
+    /// pins BOTH halves of the emitted gate: <c>cobolWord</c> under <c>{userWordHere("W")}?</c> (a user word
+    /// exactly where §8.9 leaves it free) and <c>reservedGatedWord</c> under <c>{!userWordHere("W")}?</c> (a
     /// DECLARATION still parses where §8.9 reserves it, so the funnel's targeted COBOLNET0901 names the word
     /// instead of a raw COBOL0001). Set-equality in both directions, so neither a missing gate nor a stray one
     /// survives.</para></summary>
@@ -94,7 +119,7 @@ public sealed class CobolWordsDriftTests
         var expected = DerivedGateSet();
         Assert.NotEmpty(expected);   // dataName references reservedGatedWord; an empty rule is invalid ANTLR
 
-        var gatedInCobolWord = ParseGatedAlternatives("cobolWord", negatedGate: true);
+        var gatedInCobolWord = ParseGatedAlternatives("cobolWord", negatedGate: false);
         var missing = expected.Where(w => !gatedInCobolWord.Contains(w)).OrderBy(w => w, StringComparer.Ordinal).ToList();
         var stray = gatedInCobolWord.Where(w => !expected.Contains(w)).OrderBy(w => w, StringComparer.Ordinal).ToList();
         Assert.True(missing.Count == 0 && stray.Count == 0,
@@ -107,13 +132,13 @@ public sealed class CobolWordsDriftTests
         // The other half, and the reason the two are asserted together: the SAME words carry the INVERTED gate in
         // reservedGatedWord. A word gated in one rule and absent from the other is the desync this pins — it is
         // exactly what happened when the declaration half was a hand-written list (CRT/CURSOR, kb/Work PB300).
-        var gatedInDeclarationRule = ParseGatedAlternatives("reservedGatedWord", negatedGate: false);
+        var gatedInDeclarationRule = ParseGatedAlternatives("reservedGatedWord", negatedGate: true);
         Assert.True(expected.SetEquals(gatedInDeclarationRule),
             $"reservedGatedWord ({gatedInDeclarationRule.Count}) does not equal the derived gate set "
             + $"({expected.Count}) — the two halves of the gate must name the same words");
 
         // Confidence alignment (the generator's RW-3 throw, asserted from the other side): the grammar gate keys
-        // on reservedHere() = IsReservedAt, which is confidence-blind, while the §8.9 funnel only REPORTS
+        // on userWordHere() = !IsReservedAt (outside the migration mode), which is confidence-blind, while the §8.9 funnel only REPORTS
         // high-confidence rows. A gated lower-confidence word would be rejected with a bare parse error and no
         // COBOLNET0901 to explain it.
         var confidence = LoadConfidence();
@@ -201,21 +226,24 @@ public sealed class CobolWordsDriftTests
             if (!inRule) continue;
             if (line == ";") break;
             // One alternative per line: ': X' or '| X', optionally behind a reservation-gate predicate
-            // '| {!reservedHere("X")}? X' (kb/Work PB137 — the generator emits it for reservationGated rows).
+            // '| {userWordHere("X")}? X' (kb/Work PB137/PB693 — the generator emits it for every gated word).
             var m = Regex.Match(line, @"^[:|]\s*(?:\{[^}]*\}\?\s*)?([A-Z][A-Z0-9_]*)\s*$");
             if (m.Success) alts.Add(m.Groups[1].Value);
         }
         return alts;
     }
 
-    /// <summary>The tokens of one generated rule's GATED alternatives — <c>| {reservedHere("X")}? X</c> when
-    /// <paramref name="negatedGate"/> is false, <c>| {!reservedHere("X")}? X</c> when it is true. Ungated
-    /// alternatives are ignored, so this reads the gate itself rather than the rule's membership.</summary>
+    /// <summary>The tokens of one generated rule's GATED alternatives — <c>| {userWordHere("X")}? X</c> when
+    /// <paramref name="negatedGate"/> is false, <c>| {!userWordHere("X")}? X</c> when it is true. Ungated
+    /// alternatives are ignored, so this reads the gate itself rather than the rule's membership. Note the
+    /// POLARITY: <c>cobolWord</c> carries the PLAIN predicate (admit the word where it is a user word) and
+    /// <c>reservedGatedWord</c> the NEGATED one, so <paramref name="negatedGate"/> is true for the declaration
+    /// half — the mirror image of the retired <c>reservedHere</c> spelling (kb/Work PB693).</summary>
     private static HashSet<string> ParseGatedAlternatives(string ruleName, bool negatedGate)
     {
         string path = TestRepo.Src("Cobol.Net.Frontend", "Grammar", "Core", "CobolWords.g4");
         Assert.True(File.Exists(path), $"generated grammar missing: {path} — run scripts/gen-cobol-words.ps1");
-        var pattern = new Regex(@"^[:|]\s*\{(!?)reservedHere\(""([A-Z][A-Z0-9_]*)""\)\}\?\s*([A-Z][A-Z0-9_]*)\s*$");
+        var pattern = new Regex(@"^[:|]\s*\{(!?)userWordHere\(""([A-Z][A-Z0-9_]*)""\)\}\?\s*([A-Z][A-Z0-9_]*)\s*$");
         var alts = new HashSet<string>(StringComparer.Ordinal);
         bool inRule = false;
         foreach (var raw in File.ReadAllLines(path))
