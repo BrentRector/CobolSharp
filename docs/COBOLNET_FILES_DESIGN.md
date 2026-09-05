@@ -127,7 +127,7 @@ organization or access mode:
 |---|---|---|
 | §14.9.10.3 SR2 | INVALID KEY / NOT INVALID KEY | a DELETE RECORD referencing a file **in sequential access mode** |
 | §14.9.35.3 SR2 | INVALID KEY / NOT INVALID KEY | a REWRITE referencing **a file with sequential organization**, *or* a file with **relative organization and sequential access mode** |
-| §14.9.51.3 SR2 | INVALID KEY / NOT INVALID KEY | a WRITE referencing **a file with sequential organization** — stated as a format rule ("If the organization of the write file is sequential, format 1 shall be specified"), and Format 1 of §14.9.51.2 has no INVALID KEY bracket |
+| §14.9.51.3 SR2 | INVALID KEY / NOT INVALID KEY | a WRITE referencing **a file with sequential organization** — stated as a format rule ("If the organization of the write file is sequential, format 1 shall be specified"), and Format 1 of §14.9.51.2 has no INVALID KEY bracket (⚠ that diagram is the whole prohibition, so it was **rendered from the PDF**, printed pages 785–786, not read off the OCR, whose known bias is toward falsely-restrictive syntax: Format 1 carries ADVANCING + END-OF-PAGE and no INVALID KEY, Format 2 the reverse) |
 | §14.9.30.3 SR6 | ADVANCING / AT END / NEXT / NOT AT END / PREVIOUS | a READ whose file control entry specifies **ACCESS MODE RANDOM** |
 
 **What was wrong.** All three were bound unconditionally with a "tolerated in the default (CCVS-lenient) mode"
