@@ -101,15 +101,14 @@ public sealed class SequentialConnector : FileConnector
     // The LINAGE feature is COUNTER-ONLY on the physical stream: each logical page is contiguous to the next
     // with no additional spacing (§13.18.34 GR8 — no margin blank lines, nothing emitted at page wrap), so the
     // connector adds only the counter machine + the end-of-page flag over the unchanged pending-advance stream.
-    // The evaluator closure is the ONE mechanism for both operand forms (GR6a literals are constant lambdas;
-    // GR6b data-names defer the field reads to the evaluation points).
-    private Func<(int Body, int Footing, int Top, int Bottom)>? _linageEval;
+    // ⛔ THE OPERAND VALUES ARRIVE WITH THE STATEMENT (a LinagePage?, null = the file has no LINAGE clause), and
+    // ONE argument serves both operand forms — a literal operand renders a constant, a data-name operand renders
+    // the EXECUTING element's field read (§13.18.34 GR6a/GR6b). What the connector keeps is the page MODEL most
+    // recently determined, because GR6 says "the value applies to the next logical page"; it keeps no source, or
+    // a shared connector would answer with whichever element/activation installed one last (kb/Work PB673).
     private int _pageBody;      // page size — the writable page-body line count (GR2)
     private int _footing;       // footing start (GR3 — footing area = [footing, page size] inclusive); 0 = none
     private int _top, _bottom;  // top/bottom margins (GR4/GR5) — counted into the logical page (GR1), unprinted
-
-    /// <summary>True when the FD carries a LINAGE clause (the registration installed an evaluator).</summary>
-    public bool HasLinage => _linageEval is not null;
 
     /// <summary>The LINAGE-COUNTER register (ISO §8.4.3.14): the line number at which the device is positioned
     /// within the current page body (§13.18.34 GR7). Only this connector (the I-O control system) modifies it (GR7b).</summary>
@@ -119,17 +118,24 @@ public sealed class SequentialConnector : FileConnector
     /// printing/spacing within the footing area (GR26b). Reset at the start of every counter-advancing write.</summary>
     public bool EndOfPage { get; private set; }
 
-    /// <summary>Install the LINAGE evaluator (emitted right after registration for a LINAGE FD).</summary>
-    public void SetLinage(Func<(int Body, int Footing, int Top, int Bottom)> eval) => _linageEval = eval;
+    /// <summary>ISO §13.18.34 GR6 b) 1 — establish the logical page model <i>"at the completion of an OPEN
+    /// statement with the OUTPUT phrase"</i>, plus GR7 d)'s counter reset. Called by the registry after a
+    /// SUCCESSFUL OPEN OUTPUT, with the page the EXECUTING element's own LINAGE clause evaluates to.</summary>
+    public void BeginLinagePage(LinagePage page)
+    {
+        EvaluateLinage(page);
+        LinageCounter = 1;   // GR7d — the counter is set to one at OPEN OUTPUT
+        EndOfPage = false;
+    }
 
-    /// <summary>Evaluate the LINAGE operand values for the (next) logical page (ISO §13.18.34 GR6: at OPEN OUTPUT
+    /// <summary>Adopt the LINAGE operand values for the (next) logical page (ISO §13.18.34 GR6: at OPEN OUTPUT
     /// completion, during WRITE ADVANCING PAGE, and during a page-overflow WRITE — "the value applies to the next
     /// logical page"). GR6's value rules (page size &gt; 0; 0 &lt; footing ≤ page size — footing 0 here = the phrase
     /// is absent, GR1) violated ⇒ the EC-I-O-LINAGE exception condition (§13.18.34 GR6) — the EC subsystem is a
     /// later slice, so the seam fails LOUD (COBOLNET_DESIGN §1.4), never a silent bad page model.</summary>
-    private void EvaluateLinage()
+    private void EvaluateLinage(LinagePage page)
     {
-        var (body, footing, top, bottom) = _linageEval!();
+        var (body, footing, top, bottom) = page;
         if (body <= 0 || footing < 0 || footing > body)
             throw new InvalidOperationException(
                 $"EC-I-O-LINAGE: LINAGE values page-size={body}, footing={footing} violate ISO §13.18.34 GR6 "
@@ -156,7 +162,7 @@ public sealed class SequentialConnector : FileConnector
     /// The caller invokes this AFTER the physical write — the AT END-OF-PAGE branch then observes the
     /// post-advance counter (SQ201M's footing lines print the triggering write's line number).
     /// </summary>
-    private void AdvanceLinageCounter(int lines)
+    private void AdvanceLinageCounter(int lines, LinagePage page)
     {
         EndOfPage = false;   // reset at the start of every counter-advancing write (the legacy entry reset)
         if (_pageBody <= 0) return;
@@ -164,7 +170,7 @@ public sealed class SequentialConnector : FileConnector
         {
             // ADVANCING PAGE: the counter resets to one on the new page (§13.18.34 GR7c1).
             LinageCounter = 1;
-            EvaluateLinage();   // GR6b2 — values for the NEXT logical page
+            EvaluateLinage(page);   // GR6b2 — values for the NEXT logical page
             return;
         }
         // ADVANCING n (n >= 0) or plain WRITE (n = 1): the counter is incremented (GR7c2/c3).
@@ -175,7 +181,7 @@ public sealed class SequentialConnector : FileConnector
             // to the first writable line of the succeeding page and the counter resets to 1 (GR7c4).
             LinageCounter = 1;
             EndOfPage = true;
-            EvaluateLinage();   // GR6b3 — after the overflow decision against the OLD body; next-page values
+            EvaluateLinage(page);   // GR6b3 — after the overflow decision against the OLD body; next-page values
         }
         else if (_footing > 0 && LinageCounter >= _footing)
         {
@@ -293,12 +299,10 @@ public sealed class SequentialConnector : FileConnector
                     if (!exists && IsOptional) return FileStatusCode.OptionalFileNotFound;
                     break;
             }
-            if (mode == FileOpenMode.Output && _linageEval is not null)
-            {
-                EvaluateLinage();    // ISO §13.18.34 GR6b1 — values read at the completion of an OPEN OUTPUT
-                LinageCounter = 1;   // GR7d — the counter is set to one at OPEN OUTPUT
-                EndOfPage = false;
-            }
+            // ISO §13.18.34 GR6 b) 1 reads the operand values "at the COMPLETION of an OPEN statement with the
+            // OUTPUT phrase", so the page model is established by the registry's OPEN dispatch once this body has
+            // succeeded (FileRegistry.SharedOpenAttempt → BeginLinagePage) — with the page the EXECUTING element's
+            // LINAGE clause evaluates to, which is why it cannot be read from connector state here (PB673).
             return FileStatusCode.Success;
         }
     }
@@ -350,6 +354,21 @@ public sealed class SequentialConnector : FileConnector
         return FileStatusCode.Success;
     }
 
+    // ── The line sequential character set (ISO Annex A.1 item 115) ───────────────────────────────────────────
+
+    /// <summary>⛔ THE ONE LINE-CHARACTER-SET TEST of a record area, shared by every direction so READ and WRITE
+    /// can never disagree about what a line sequential character is (kb/Work PB329): §14.9.30.4 GR16 answers it
+    /// with '09' on a successful READ, §14.9.51.4 GR23 and §14.9.35.4 GR17 d) with '71' on an unsuccessful
+    /// WRITE / REWRITE. False for a record sequential file — all three rules are organization-scoped ("for a
+    /// line sequential file"), and a record sequential record is plain bytes that must round-trip byte-exact.
+    /// The set and its Annex A.1 item 115 derivation live in <see cref="LineSequentialCharacterSet"/>.
+    /// <para>The subject is the RECORD AREA, which is what all three rules name — not the trimmed image a line
+    /// sequential WRITE presents, and not the length-limited prefix a varying record transfers. Trailing area
+    /// positions are spaces, which are IN the set, so the wider subject cannot manufacture a status; a character
+    /// outside the set anywhere in the area is what the rules ask about.</para></summary>
+    private bool RecordAreaOutsideLineCharacterSet(ReadOnlySpan<char> recordArea) =>
+        _lineSequential && LineSequentialCharacterSet.HasCharacterOutside(recordArea, NationalRecordArea);
+
     // ── WRITE ────────────────────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>Plain <c>WRITE record</c> (ISO §14.9.46): line-sequential writes the trimmed image as a line;
@@ -357,7 +376,7 @@ public sealed class SequentialConnector : FileConnector
     /// <paramref name="length"/> bytes (the DEPENDING item's content, §13.18.43 GR13a) or the image's own length
     /// (GR13b/c), failing with '44' outside the declared bounds (GR14). Valid only when open OUTPUT/EXTEND
     /// (else 48).</summary>
-    public string Write(string image, int length = -1)
+    public string Write(string image, int length, LinagePage? page)
     {
         if (!IsOpen || _writer is null) return Status = FileStatusCode.WriteNotOpenForOutput;
         if (Mode is not (FileOpenMode.Output or FileOpenMode.Extend)) return Status = FileStatusCode.WriteNotOpenForOutput;
@@ -367,7 +386,14 @@ public sealed class SequentialConnector : FileConnector
         // ADVANCING phrase still line-advances (a raw fixed-width block would weld onto the previous line). In
         // the pending-advance stream model (each AFTER-write leads with its newline; CLOSE supplies the final
         // one), the write-then-advance shape reproduces the print stream the golden corpus encodes.
-        if ((_afterAdvancing || HasLinage) && !_lineSequential) return WriteAdvancing(image, 1, before: true);
+        if ((_afterAdvancing || page is not null) && !_lineSequential) return WriteAdvancing(image, 1, before: true, page);
+        // §14.9.51.4 GR23: "For a line sequential file, if the record area contains one or more characters that
+        // are not in the implementor-defined character set defined for a line sequential file, the execution of
+        // the WRITE statement is unsuccessful and the I-O status in the write file connector is set to '71'."
+        // Ahead of every shape branch because the rule is organization-scoped, not shape-scoped, and ahead of
+        // any stream traffic because §9.1.13.10 item 1 requires the record area (and the medium) to be left
+        // unchanged. This arm did not exist before kb/Work PB329 — only REWRITE's GR17 d) twin did.
+        if (RecordAreaOutsideLineCharacterSet(image)) return Status = FileStatusCode.LineRecordInvalidChar;
         if (IsVarying)
         {
             int len = length >= 0 ? length : image.Length;
@@ -382,17 +408,21 @@ public sealed class SequentialConnector : FileConnector
         _afterAdvancing = false;
         // GR7c3 (§13.18.34): a plain WRITE to a LINAGE file advances the counter by one. Only the
         // line-sequential/varying shapes reach here (the record-sequential LINAGE write rerouted above).
-        if (_linageEval is not null) AdvanceLinageCounter(1);
+        if (page is { } pg) AdvanceLinageCounter(1, pg);
         return Status = FileStatusCode.Success;
     }
 
     /// <summary>Print-control <c>WRITE record {BEFORE|AFTER} ADVANCING {n LINES | PAGE}</c> (ISO §14.9.46 GR): for
     /// AFTER, advance then write the trimmed image; for BEFORE, write then advance. <paramref name="lines"/> = -1
     /// means ADVANCING PAGE (a form feed). The leading/trailing newline structure matches the legacy print stream.</summary>
-    public string WriteAdvancing(string image, int lines, bool before)
+    public string WriteAdvancing(string image, int lines, bool before, LinagePage? page)
     {
         if (!IsOpen || _writer is null) return Status = FileStatusCode.WriteNotOpenForOutput;
         if (Mode is not (FileOpenMode.Output or FileOpenMode.Extend)) return Status = FileStatusCode.WriteNotOpenForOutput;
+        // §14.9.51.4 GR23 again — the SECOND WRITE ARM. GR23 is a property of the FILE, so it binds every entry
+        // point a WRITE statement can reach on a line sequential connector, not just the plain-record one; it is
+        // tested on the raw record area, ahead of PrintSafe's print-stream mapping.
+        if (RecordAreaOutsideLineCharacterSet(image)) return Status = FileStatusCode.LineRecordInvalidChar;
         _afterAdvancing = true;
         string text = PrintSafe(TrimRecordEnd(image));
         if (before) { _writer.Write(text); Advance(lines); }
@@ -400,7 +430,7 @@ public sealed class SequentialConnector : FileConnector
         // The LINAGE counter advances as part of the write, AFTER the physical presentation (the legacy
         // ordering): an AT END-OF-PAGE branch then reads the POST-advance counter of the triggering write
         // (§13.18.34 GR7c; SQ201M's footing lines print line 45).
-        if (_linageEval is not null) AdvanceLinageCounter(lines);
+        if (page is { } pg) AdvanceLinageCounter(lines, pg);
         return Status = FileStatusCode.Success;
     }
 
@@ -421,19 +451,20 @@ public sealed class SequentialConnector : FileConnector
     /// COBOL-2023): present the trimmed image at the CURRENT line, then advance by the BEFORE amount and by the AFTER
     /// amount — both after presentation (SR17 forbids PAGE, so neither is a form feed). LINAGE-COUNTER increments by
     /// n+m.</summary>
-    public string WriteBeforeAndAfter(string image, int beforeLines, int afterLines)
+    public string WriteBeforeAndAfter(string image, int beforeLines, int afterLines, LinagePage? page)
     {
         if (!IsOpen || _writer is null) return Status = FileStatusCode.WriteNotOpenForOutput;
         if (Mode is not (FileOpenMode.Output or FileOpenMode.Extend)) return Status = FileStatusCode.WriteNotOpenForOutput;
+        if (RecordAreaOutsideLineCharacterSet(image)) return Status = FileStatusCode.LineRecordInvalidChar;   // '71' §14.9.51.4 GR23 — the THIRD WRITE ARM
         _afterAdvancing = true;
         _writer.Write(PrintSafe(TrimRecordEnd(image)));
         // Two DISTINCT advancing operations (GR25e then GR25f): advance and count each SEPARATELY so a page-boundary
         // crossing WITHIN the BEFORE advance is handled by its own §14.9.51 GR26/GR7c overflow logic before the
         // AFTER advance runs (a single combined increment would mis-handle a boundary between the two).
         Advance(beforeLines);
-        if (_linageEval is not null) AdvanceLinageCounter(beforeLines);
+        if (page is { } pg) AdvanceLinageCounter(beforeLines, pg);
         Advance(afterLines);
-        if (_linageEval is not null) AdvanceLinageCounter(afterLines);
+        if (page is { } pg2) AdvanceLinageCounter(afterLines, pg2);
         return Status = FileStatusCode.Success;
     }
 
@@ -459,6 +490,7 @@ public sealed class SequentialConnector : FileConnector
         // is excluded — its short/long conditions are '06'/'09', never '04'.
         bool shortLong = false;
         bool lineTooLong = false;
+        bool lineBadChar = false;
         if (_lineSequential)
         {
             // §14.9.30 GR15: an over-length line-sequential record is truncated on the right to the record width, the
@@ -489,6 +521,14 @@ public sealed class SequentialConnector : FileConnector
                 lineTooLong = true;
             }
             else { LastReadLength = line.Length; image = Fit(line); }   // §14.9.30.4 GR15 fill — national-aware (kb/Work PB327)
+            // §14.9.30.4 GR16: "If the execution of the READ statement is successful but the record area
+            // contains one or more characters not in the implementor-defined character set for a line
+            // sequential file, the I-O status in the read file connector is set to '09'" (§9.1.13.2 item 7).
+            // ⛔ Tested on the DELIVERED record area, which is what GR16 names — so a character in the unread
+            // remainder of an over-length line belongs to the READ that DELIVERS it, not to this one. GR16 is
+            // stated after GR15 and asks only that the read be successful, so it also lands on a truncated
+            // ('06') read; the status arbitration below follows that order (kb/Work PB329).
+            lineBadChar = RecordAreaOutsideLineCharacterSet(image);
         }
         else if (IsVarying)
         {
@@ -521,7 +561,8 @@ public sealed class SequentialConnector : FileConnector
             if (n < RecordWidth) shortLong = true;
         }
         _readOrdinal++;   // the record just made available is ordinal N+1 (§9.1.16 lock identity)
-        ReadSucceeded(lineTooLong ? FileStatusCode.LineRecordTooLong
+        ReadSucceeded(lineBadChar ? FileStatusCode.LineRecordInvalidCharRead   // '09' §14.9.30.4 GR16 — stated after GR15, so it wins over '06'
+            : lineTooLong ? FileStatusCode.LineRecordTooLong
             : shortLong ? FileStatusCode.RecordLengthShortLong : FileStatusCode.Success);
         return true;
     }
@@ -596,14 +637,16 @@ public sealed class SequentialConnector : FileConnector
         if (_lineSequential && _lastLineStart >= 0 && _reader is { BaseStream: { CanSeek: true, CanWrite: true } lstream })
         {
             // §14.9.35.4 GR17 (line-sequential REWRITE): (a) a preceding partial ('06') read ⇒ '44'; (d) a record
-            // carrying a line delimiter is outside the line character set ⇒ '71'; (b) a record LONGER than the one
-            // being replaced ⇒ '44'; (c) otherwise space-pad the trimmed record to the replaced length and overwrite
-            // in place ⇒ '00'. Padding to _lastLineBytes keeps the physical byte span (and the delimiter position)
-            // invariant, so the overwrite is exact; the trimmed length matches the line-sequential WRITE model.
+            // area holding a character outside the line sequential character set ⇒ '71'; (b) a record LONGER than
+            // the one being replaced ⇒ '44'; (c) otherwise space-pad the trimmed record to the replaced length and
+            // overwrite in place ⇒ '00'. Padding to _lastLineBytes keeps the physical byte span (and the delimiter
+            // position) invariant, so the overwrite is exact; the trimmed length matches the line-sequential WRITE model.
             if (_lastReadLinePartial) return Status = FileStatusCode.RecordSizeViolation;                // '44' GR17a / §9.1.13.7 item 4d
+            // GR17 d) now routes through the SHARED set instead of the private CR/LF test it carried before
+            // kb/Work PB329 — the delimiters are only the two members the framing forces out, and a REWRITE and a
+            // WRITE of the identical record area must reach the identical verdict (Annex A.1 item 115).
+            if (RecordAreaOutsideLineCharacterSet(image)) return Status = FileStatusCode.LineRecordInvalidChar;   // '71' GR17d
             string content = TrimRecordEnd(Fit(image));
-            if (content.IndexOf('\n') >= 0 || content.IndexOf('\r') >= 0)
-                return Status = FileStatusCode.LineRecordInvalidChar;                                    // '71' GR17d
             if (content.Length > _lastLineBytes) return Status = FileStatusCode.RecordSizeViolation;     // '44' GR17b
             content = FitRecord(content, _lastLineBytes);                                                // '00' GR17c (span-invariant)
             long resume = lstream.Position;

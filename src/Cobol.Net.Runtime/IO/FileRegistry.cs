@@ -189,15 +189,16 @@ public sealed class FileRegistry
     /// <summary>OPEN in <paramref name="mode"/> (ISO §14.9.27), with no sharing or retry phrase on the statement
     /// — <see cref="OpenCore"/> arbitrates it against the physical-file registry exactly like the phrase-bearing
     /// <see cref="OpenShared"/>, one polymorphic dispatch for all three organizations.</summary>
-    public void Open(string name, FileOpenMode mode) => OpenCore(name, mode, null, FileRetryKind.None, 0, false);
+    public void Open(string name, FileOpenMode mode, string assign, bool assignDynamic, LinagePage? page)
+        => OpenCore(name, mode, null, FileRetryKind.None, 0, false, assign, assignDynamic, page);
 
     /// <summary>OPEN … WITH NO REWIND (ISO §14.9.27) — the same arbitrated <see cref="OpenCore"/> with the
     /// phrase's flag set, so the '07' overlay is the ONE effect site whichever entry point the emitter picks.
     /// The OPEN twin of <see cref="CloseNoRewind"/>: the same phrase, the same medium model, the same '07'
     /// (§9.1.13.2 item 6). Before kb/Work PB317 the phrase was parsed and dropped, so an OPEN … WITH NO REWIND
     /// reported '00' while its CLOSE spelling reported '07'.</summary>
-    public void OpenNoRewind(string name, FileOpenMode mode)
-        => OpenCore(name, mode, null, FileRetryKind.None, 0, true);
+    public void OpenNoRewind(string name, FileOpenMode mode, string assign, bool assignDynamic, LinagePage? page)
+        => OpenCore(name, mode, null, FileRetryKind.None, 0, true, assign, assignDynamic, page);
 
     /// <summary>⛔ THE ONE SITE for the OPEN statement's NO REWIND phrase — §14.9.27.4 GR11 and GR12, keyed on
     /// the SAME medium model the CLOSE arm's Table 14 is keyed on (<see cref="PhysicalFileCategory"/>), so the
@@ -384,41 +385,38 @@ public sealed class FileRegistry
 
     /// <summary>Plain <c>WRITE record</c> (ISO §14.9.46); <paramref name="length"/> is the varying-record length
     /// (§13.18.43 GR13a), -1 = the record's own size.</summary>
-    public void Write(string name, string image, int length)
-    { if (_files.TryGetValue(name, out var c) && c is SequentialConnector f) f.Write(image, length); }
+    public void Write(string name, string image, int length, LinagePage? page)
+    { if (_files.TryGetValue(name, out var c) && c is SequentialConnector f) f.Write(image, length, page); }
 
     /// <summary><c>WRITE record {BEFORE|AFTER} ADVANCING {n LINES | PAGE}</c>; <paramref name="lines"/> = -1 is PAGE.</summary>
-    public void WriteAdvancing(string name, string image, int lines, bool before)
-    { if (_files.TryGetValue(name, out var c) && c is SequentialConnector f) f.WriteAdvancing(image, lines, before); }
+    public void WriteAdvancing(string name, string image, int lines, bool before, LinagePage? page)
+    { if (_files.TryGetValue(name, out var c) && c is SequentialConnector f) f.WriteAdvancing(image, lines, before, page); }
 
     /// <summary>COBOL-2023 combined <c>WRITE record BEFORE ADVANCING n AFTER ADVANCING m</c> (ISO §14.9.51 GR25e/f).</summary>
-    public void WriteBeforeAndAfter(string name, string image, int beforeLines, int afterLines)
-    { if (_files.TryGetValue(name, out var c) && c is SequentialConnector f) f.WriteBeforeAndAfter(image, beforeLines, afterLines); }
-
-    /// <summary>Install a LINAGE file's logical-page evaluator (ISO §13.18.34 GR6).</summary>
-    public void SetLinage(string name, Func<(int Body, int Footing, int Top, int Bottom)> eval)
-    { if (_files.TryGetValue(name, out var c) && c is SequentialConnector f) f.SetLinage(eval); }
-
-    /// <summary>Install a file's ASSIGN … USING dynamic-assignment source (ISO §12.4.5.3 GR3 b / §9.1.21). Applies to
-    /// EVERY organization — the ASSIGN clause is common to all four SELECT formats — so it is deliberately NOT
-    /// narrowed to a connector kind the way <see cref="SetLinage"/> is.</summary>
-    public void SetAssignUsing(string name, Func<string> source)
-    { if (_files.TryGetValue(name, out var c)) c.SetAssignUsing(source); }
+    public void WriteBeforeAndAfter(string name, string image, int beforeLines, int afterLines, LinagePage? page)
+    { if (_files.TryGetValue(name, out var c) && c is SequentialConnector f) f.WriteBeforeAndAfter(image, beforeLines, afterLines, page); }
 
     /// <summary>
     /// ISO §12.4.5.3 GR3, reached from §14.9.27.4 GR26 — THE ONE PLACE a statement establishes the connector's
-    /// association with a physical file, called from the OPEN entries (<see cref="Open"/>, <see cref="OpenShared"/> —
-    /// which the emitted SORT/MERGE implicit opens also reach, §14.9.40.4 GR12a/GR15a, §14.9.24.4 GR7a) and from
-    /// <see cref="DeleteFile"/>. Returns false when the association could not be made: the connector then carries the
+    /// association with a physical file, with EXACTLY ONE caller — <see cref="OpenCore"/>, the single OPEN dispatch
+    /// that <see cref="Open"/>, <see cref="OpenNoRewind"/>, <see cref="OpenShared"/> and the emitted SORT/MERGE
+    /// implicit opens (§14.9.40.4 GR12a/GR15a, §14.9.24.4 GR7a) all funnel through. <see cref="DeleteFile"/> does NOT
+    /// associate: §12.4.5.3 GR3's list of associating statements is closed (OPEN, SORT, MERGE), so it reads the
+    /// standing association and takes §14.9.10.4 GR14's '05' when there is none. Returns false when the association
+    /// could not be made: the connector then carries the
     /// §9.1.13.6 item 2 '31' status and the statement does NOT proceed — GR3's closing sentence, "the OPEN, SORT, or
     /// MERGE statement is unsuccessful".
     /// <para>An unregistered name falls through to the caller's own <see cref="Require"/>, which reports the compiler
     /// defect loudly (kb/Work PB140); this method never invents a status for one.</para>
+    /// <para>⛔ The specification is the STATEMENT'S argument, rendered by the emitter from the file control entry of
+    /// the runtime element executing this OPEN — never connector state. GR3 a) and b) both name that element, and one
+    /// file connector can be described by several of them (§13.18.22.4 GR4 a: an EXTERNAL file connector is ONE object
+    /// per run unit); a connector-held source answered with whichever element installed it last (kb/Work PB673).</para>
     /// </summary>
-    private bool Associate(string name)
+    private bool Associate(string name, string assign, bool assignDynamic)
     {
         if (!_files.TryGetValue(name, out var c)) return true;
-        if (c.Associate() is not { } failed) return true;
+        if (c.Associate(assign, assignDynamic) is not { } failed) return true;
         c.SetStatus(failed);   // '31' — the status assignment is also the §15.28.4 r2a access record (PB63)
         return false;
     }
@@ -734,14 +732,15 @@ public sealed class FileRegistry
     /// <summary>OPEN with an explicit SHARING override and/or a RETRY phrase (§14.9.27) — the emitter's entry
     /// point when the OPEN statement itself carries a sharing/retry phrase.</summary>
     public void OpenShared(string name, FileOpenMode mode, bool hasSharingOverride, FileSharing sharingOverride,
-        FileRetryKind retryKind, int retryAmount, bool noRewind)
+        FileRetryKind retryKind, int retryAmount, bool noRewind, string assign, bool assignDynamic, LinagePage? page)
     {
         // A sharing/retry phrase on the OPEN makes the connector a record-locking participant even without a
         // SELECT clause. Its SHARING MODE is still whatever §9.1.15 gives it: the phrase's mode when a SHARING
         // phrase is written, otherwise the undetermined implementor default — never a hard-coded ALL OTHER.
         if (!_connectorShares.ContainsKey(name))
             RegisterSharing(name, ImplementorDefaultSharing, FileLockMode.None, false);
-        OpenCore(name, mode, hasSharingOverride ? sharingOverride : null, retryKind, retryAmount, noRewind);
+        OpenCore(name, mode, hasSharingOverride ? sharingOverride : null, retryKind, retryAmount, noRewind,
+            assign, assignDynamic, page);
     }
 
     /// <summary>⛔ THE ONE OPEN DISPATCH (ISO §14.9.27). Every OPEN — phrase-bearing or plain — arbitrates against
@@ -763,7 +762,7 @@ public sealed class FileRegistry
     /// (kb/Work PB317). The overlay is self-guarding: §14.9.27.4 GR25 a) owns an unsuccessful open's status, so
     /// <see cref="NoRewindPhraseEffect"/> writes '07' only over a status whose first digit is '0'.</para></summary>
     private void OpenCore(string name, FileOpenMode mode, FileSharing? sharingOverride,
-        FileRetryKind retryKind, int retryAmount, bool noRewind)
+        FileRetryKind retryKind, int retryAmount, bool noRewind, string assign, bool assignDynamic, LinagePage? page)
     {
         DrainPendingObjectCloses();   // reclaim any GC-finalized per-object connectors on this (mutator) thread first
         // §14.9.27.4 GR26 → §12.4.5.3 GR3, and BEFORE the Table-19 arbitration: a sharing conflict is defined
@@ -772,19 +771,19 @@ public sealed class FileRegistry
         // loop: data-name-1's content is read once per OPEN statement (GR3 b), not once per retry attempt.
         // ⛔ ONE call site for BOTH entry points — the plain Open and OpenShared both funnel through here
         // (kb/Work PB324 landed on top of PB321's unified dispatch).
-        if (!Associate(name)) return;
+        if (!Associate(name, assign, assignDynamic)) return;
         // SharedOpenAttempt sets the connector status on the terminal attempt, and RetryLoop lands an exhausted
         // retry on the CONFLICT'S OWN status (§14.7.9.3 closing paragraph → §9.1.13.9 item 1 = '61'), so there is
         // nothing left to override afterwards — the former `if (status == Deadlock) SetStatusOf(…)` line existed
         // only to re-assert the '52' RetryLoop used to manufacture (kb/Work PB142).
-        _ = RetryLoop(() => SharedOpenAttempt(name, mode, sharingOverride), retryKind, retryAmount);
+        _ = RetryLoop(() => SharedOpenAttempt(name, mode, sharingOverride, page), retryKind, retryAmount);
         // The WITH NO REWIND phrase's own effect — the ONE effect site, never a second copy (kb/Work PB317).
         if (noRewind) NoRewindPhraseEffect(name);
     }
 
     /// <summary>The arbitrated OPEN body. Returns the resulting I-O status; on a Table-19 conflict returns 61
     /// without opening the connector, leaving the file <i>"not affected"</i> (§14.9.27.4 GR25).</summary>
-    private string SharedOpenAttempt(string name, FileOpenMode mode, FileSharing? sharingOverride)
+    private string SharedOpenAttempt(string name, FileOpenMode mode, FileSharing? sharingOverride, LinagePage? page)
     {
         var c = Require(name);   // an unregistered name is a COMPILER defect and LOUD (kb/Work PB140)
         if (_locked.Contains(name)) { c.SetStatus(FileStatusCode.FileLocked); return FileStatusCode.FileLocked; }  // ≤2014 CLOSE WITH LOCK
@@ -815,6 +814,10 @@ public sealed class FileRegistry
             // only for a connector with a SHARING/LOCK MODE clause, so unshared sequential I/O is untouched by
             // the lock subsystem even though it now takes part in the Table-19 arbitration.
             if (c is SequentialConnector f && _connectorShares.ContainsKey(name)) f.SeedSharedWriteBase();
+            // ISO §13.18.34 GR6 b) 1 — the LINAGE operand values are read "at the completion of an OPEN statement
+            // with the OUTPUT phrase", so the page model is established HERE, with the page the EXECUTING element's
+            // own LINAGE clause evaluated to (kb/Work PB673), and only for an open that actually succeeded.
+            if (mode == FileOpenMode.Output && page is { } pg && c is SequentialConnector sq) sq.BeginLinagePage(pg);
         }
         return status;
     }
@@ -850,11 +853,15 @@ public sealed class FileRegistry
         return true;
     }
 
-    /// <summary>Record-lock governance for a just-completed keyed READ (§9.1.16; called right after the physical
-    /// read for any sharing-active file). Returns the effective status (and stores it on the connector).
-    /// (The keyed shape is post-read because a NEXT/PREVIOUS walk's record identity is only known after the read;
-    /// the sequential-organization twin is <see cref="ReadShared"/>, whose next ordinal is knowable BEFORE the
-    /// read, keeping the file position indicator untouched on a conflict — §14.9.30 GR10a.)</summary>
+    /// <summary>Record-lock governance for a just-completed FORMAT-2 (random) keyed READ (§9.1.16; called right
+    /// after the physical read for any sharing-active file). Returns the effective status (and stores it on the
+    /// connector).
+    /// <para>FORMAT 1 — every organization's NEXT/PREVIOUS walk — does NOT come here: it runs the whole read
+    /// inside <see cref="ReadShared"/>, which owns the §14.9.30.4 GR22 skip-scan. A Format-2 read has no next
+    /// record to advance to and ADVANCING ON LOCK is not in the Format-2 general format at all (§14.9.30.2), so
+    /// this entry carries no advancing-on-lock argument.</para>
+    /// <para>⚠ The post-read shape leaves the file position indicator advanced on a '51', which §14.9.30.4
+    /// GR10 a) forbids — kb/Work PB338 owns that half and the peek-then-commit split it needs.</para></summary>
     public string ReadLockGovern(string name, string statusJustRead, FileRecordLock phrase, bool ignoringLock,
         FileRetryKind retryKind, int retryAmount)
     {
@@ -864,21 +871,28 @@ public sealed class FileRegistry
         string recId = c.LastReadRecordId;
         if (recId.Length == 0) return statusJustRead;   // no record was identified
         var st = _physical.For(c.HostPath);   // the connector's LIVE association (§12.4.5.3 GR3), never a cached copy
-
-        if (!ignoringLock)
-        {
-            // Another connector's lock blocks the read (§14.9.30 GR9). RETRY re-checks; in one run unit the
-            // holder cannot release mid-loop, so n TIMES exhausts to 51 and SECONDS/FOREVER bail to 52 (GR4a).
-            string conflict = RetryLoop(
-                () => PhysicalFileTable.IsLockedByOther(st, name, recId) ? FileStatusCode.RecordLocked : FileStatusCode.Success,
-                retryKind, retryAmount);
-            if (conflict != FileStatusCode.Success)
-            {
-                SetStatusOf(name, conflict);   // the status assignment drops the '43' gate (PB140); FPI kept (GR10a)
-                return conflict;
-            }
-        }
+        if (ConflictOnLockedRecord(name, st, recId, ignoringLock, retryKind, retryAmount) is { } conflict)
+            return conflict;
         return ApplyReadLockDiscipline(meta, st, name, recId, phrase) is { } denied ? denied : statusJustRead;
+    }
+
+    /// <summary>⛔ THE ONE §14.9.30.4 GR9 RECORD-OPERATION-CONFLICT CHECK, shared by both READ formats and all
+    /// three organizations: is the record identified for access locked by ANOTHER file connector? RETRY
+    /// re-checks (§14.7.9); in one run unit the holder cannot release mid-loop, so n TIMES exhausts to '51' and
+    /// SECONDS/FOREVER bail to '52' (GR4a). Returns the conflict status — already stored on the connector — or
+    /// null when the read may proceed. IGNORING LOCK short-circuits it: GR12 makes "the requested record …
+    /// available, even if it is locked".</summary>
+    private string? ConflictOnLockedRecord(string name, PhysicalFileTable.State st, string recId,
+        bool ignoringLock, FileRetryKind retryKind, int retryAmount)
+    {
+        if (ignoringLock) return null;                                       // §14.9.30.4 GR12
+        if (!PhysicalFileTable.IsLockedByOther(st, name, recId)) return null;
+        string conflict = RetryLoop(
+            () => PhysicalFileTable.IsLockedByOther(st, name, recId) ? FileStatusCode.RecordLocked : FileStatusCode.Success,
+            retryKind, retryAmount);
+        if (conflict == FileStatusCode.Success) return null;
+        SetStatusOf(name, conflict);   // the status assignment drops the '43' gate (PB140); FPI kept where GR10a applies
+        return conflict;
     }
 
     /// <summary>The §14.9.30 GR11 post-read lock actions, shared by the keyed and sequential read paths:
@@ -927,53 +941,94 @@ public sealed class FileRegistry
         return true;
     }
 
-    /// <summary>Sequential-organization governed READ (§9.1.16 on sequential files — the READ lock rules
-    /// §14.9.30 GR7–GR12 are ALL-FORMATS rules). The next record's ordinal is knowable BEFORE the read, so the
-    /// conflict check precedes the physical read: on a record-operation conflict the file position indicator is
-    /// UNCHANGED (GR10a) and the record area untouched (GR10c refined to "unchanged", the documented COBOL.NET
-    /// refinement). ADVANCING ON LOCK (GR22) skip-scans locked records — each is read-and-discarded "as if the
-    /// locked record were read and the same READ statement were executed" — with no conflict condition; reaching
-    /// end-of-file is the ordinary at-end. Returns true iff a record was made available (the emitted contract of
-    /// the plain <see cref="Read"/>).</summary>
-    public bool ReadShared(string name, FileRecordLock phrase, bool advancingOnLock, bool ignoringLock,
-        FileRetryKind retryKind, int retryAmount, out string image)
+    /// <summary>⛔ THE ONE GOVERNED FORMAT-1 (sequential-access) READ — sequential, relative AND indexed
+    /// organization (§9.1.16; the READ lock rules §14.9.30.4 GR7–GR12 are ALL-FORMATS rules, and GR22 is a
+    /// Format-1 rule because ADVANCING appears only in the Format-1 general format and §14.9.30.3 SR6 bars it
+    /// under ACCESS MODE RANDOM). Returns the I-O status; a record was made available iff it begins '0'.
+    /// <para>Where the organization can NAME the record a read would deliver before delivering it — only the
+    /// sequential walk, see <see cref="PeekFormat1RecordId"/> — the GR9 conflict check precedes the physical
+    /// read, so on a record operation conflict the file position indicator is UNCHANGED (GR10 a) and the record
+    /// area untouched (GR10 c) refined to "unchanged", the documented COBOL.NET refinement). A keyed walk
+    /// cannot, so its '51' leaves the position advanced — kb/Work PB338 owns that.</para>
+    /// <para><b>ADVANCING ON LOCK (GR22) needs no such peek on ANY organization</b>, which is why the skip-scan
+    /// is written ONCE here rather than per-arm: the rule's own model IS post-read — "as if the locked record
+    /// were read and then the same READ statement were executed", repeated "until either an unlocked record is
+    /// read or the end of the file is encountered if NEXT is specified or implied, or the beginning of file is
+    /// encountered if PREVIOUS is specified" — and "A record operation conflict condition does not exist", so
+    /// GR10 a) never applies to it. While the loop lived on the sequential arm alone a relative or indexed READ
+    /// ADVANCING ON LOCK answered '51', precisely the status GR22 says cannot arise (kb/Work PB340).</para>
+    /// </summary>
+    public string ReadShared(string name, bool previous, FileRecordLock phrase, bool advancingOnLock,
+        bool ignoringLock, FileRetryKind retryKind, int retryAmount, out string image)
     {
-        if (!_files.TryGetValue(name, out var c) || c is not SequentialConnector f) { image = ""; return false; }
-        if (!_connectorShares.TryGetValue(name, out var meta)) return f.Read(out image);   // not sharing-active — phrases inert (§12.4.5.9 GR1)
+        image = "";
+        if (!_files.TryGetValue(name, out var c)) return FileStatusCode.PermanentError;
+        if (!_connectorShares.TryGetValue(name, out var meta))
+            return ReadFormat1Step(name, c, previous, out image);   // not sharing-active — the phrases are inert (§12.4.5.9 GR1)
         var st = _physical.For(c.HostPath);   // the connector's LIVE association (§12.4.5.3 GR3), never a cached copy
         while (true)
         {
-            if (!ignoringLock && f.ReadEligible)   // a mode/position failure keeps its own status
+            // The GR9 pre-read leg. ADVANCING ON LOCK skips it: GR22 rules the conflict condition out, and its
+            // skip-scan below is post-read on every organization.
+            string peek = advancingOnLock ? "" : PeekFormat1RecordId(c);
+            if (peek.Length > 0
+                && ConflictOnLockedRecord(name, st, peek, ignoringLock, retryKind, retryAmount) is { } pre)
             {
-                string recId = f.NextReadOrdinal.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                if (PhysicalFileTable.IsLockedByOther(st, name, recId))
-                {
-                    if (advancingOnLock)
-                    {
-                        // §14.9.30 GR22 — skip the locked record (read + discard) and repeat; no conflict raised.
-                        if (!f.Read(out image)) return false;   // end of file → at end ('10'), GR22 tail
-                        continue;
-                    }
-                    string conflict = RetryLoop(
-                        () => PhysicalFileTable.IsLockedByOther(st, name, recId) ? FileStatusCode.RecordLocked : FileStatusCode.Success,
-                        retryKind, retryAmount);
-                    if (conflict != FileStatusCode.Success)
-                    {
-                        f.SetStatus(conflict);   // the status assignment drops the '43' gate (PB140); FPI kept (GR10a)
-                        image = "";
-                        return false;
-                    }
-                }
+                image = "";
+                return pre;
             }
-            bool ok = f.Read(out image);
-            if (ok && ApplyReadLockDiscipline(meta, st, name, f.LastReadRecordId, phrase) is not null)
+            string status = ReadFormat1Step(name, c, previous, out image);
+            if (status.Length == 0 || status[0] != '0') return status;   // at end (GR24) or a mode/position failure
+            string recId = c.LastReadRecordId;
+            if (recId.Length == 0) return status;                        // no record identity to govern
+            // ⛔ §14.9.30.4 GR22 — THE ONE ADVANCING ON LOCK SKIP-SCAN, reached by all three organizations. The
+            // locked record HAS been read, so the file position indicator has advanced, which is exactly what
+            // "as if the locked record were read" requires; the same READ statement then runs again.
+            if (advancingOnLock && !ignoringLock && PhysicalFileTable.IsLockedByOther(st, name, recId)) continue;
+            // The post-read GR9 leg, for an organization with no pre-read identity (a keyed walk); when the
+            // pre-read leg ran it already cleared this same record.
+            if (peek.Length == 0
+                && ConflictOnLockedRecord(name, st, recId, ignoringLock, retryKind, retryAmount) is { } post)
+            {
+                image = "";
+                return post;
+            }
+            if (ApplyReadLockDiscipline(meta, st, name, recId, phrase) is { } denied)
             {
                 image = "";   // a 53/54 lock-denial is an unsuccessful READ (§12.4.5.9 GR7) — no record available
-                return false;
+                return denied;
             }
-            return ok;
+            return status;
         }
     }
+
+    /// <summary>ONE physical Format-1 (sequential-access) retrieval step on ANY organization — the step
+    /// §14.9.30.4 GR22's skip-scan repeats. Returns the I-O status the connector assigned.
+    /// (READ PREVIOUS on the sequential ORGANIZATION is kb/Work PB334 — <c>BoundRead</c> carries no direction
+    /// yet, so <paramref name="previous"/> reaches that arm only as <see langword="false"/>.)</summary>
+    private static string ReadFormat1Step(string name, FileConnector c, bool previous, out string image)
+    {
+        image = "";
+        switch (c)
+        {
+            case SequentialConnector f: f.Read(out image); return f.Status;
+            case RelativeConnector r: return previous ? r.ReadPrevious(out image) : r.ReadNext(out image);
+            case IndexedConnector ix: return previous ? ix.ReadPrevious(out image) : ix.ReadNext(out image);
+            default: throw MisroutedVerb("governed READ (Format 1)", name, c);
+        }
+    }
+
+    /// <summary>The lock identity of the record a Format-1 read would make available NEXT, when the organization
+    /// can know it BEFORE the physical read — §14.9.30.4 GR9's pre-read conflict target, which is what keeps the
+    /// file position indicator unchanged on a '51' (GR10 a). "" when it cannot be known: a relative or indexed
+    /// NEXT/PREVIOUS walk selects "the first existing record … greater than the file position indicator"
+    /// (§14.9.30.4 GR21), and which slot/key that is, is learned only by reading it. Also "" when a read now
+    /// would fail before the physical stage, so a mode/position failure keeps its own status ('47'/'46'/'10')
+    /// rather than a premature '51'.</summary>
+    private static string PeekFormat1RecordId(FileConnector c) =>
+        c is SequentialConnector { ReadEligible: true } f
+            ? f.NextReadOrdinal.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : "";
 
     /// <summary>Governed WRITE for a sharing-active connector, any organization (§14.9.51 GR10/GR11 + §14.7.9).
     /// No record-operation conflict is defined for WRITE — §9.1.13.8's 51 covers "an attempt to ACCESS a record",
@@ -981,11 +1036,11 @@ public sealed class FileRegistry
     /// GR16's RETRY governs implementor "resources … locked by another run unit", which cannot arise in-process,
     /// so the first attempt decides. Returns the I-O status.</summary>
     public string WriteShared(string name, string image, int length, FileRecordLock phrase,
-        FileRetryKind retryKind, int retryAmount)
+        FileRetryKind retryKind, int retryAmount, LinagePage? page)
     {
         _ = retryKind; _ = retryAmount;   // §14.9.51 GR16 — see the summary; kept in the signature as the bound RETRY carrier
         if (!_files.TryGetValue(name, out var c)) return FileStatusCode.PermanentError;
-        if (!_connectorShares.TryGetValue(name, out var meta)) return WriteAnyOrg(c, image, length);
+        if (!_connectorShares.TryGetValue(name, out var meta)) return WriteAnyOrg(c, image, length, page);
         var st = _physical.For(c.HostPath);   // the connector's LIVE association (§12.4.5.3 GR3), never a cached copy
         if (!meta.Multiple) PhysicalFileTable.ReleaseAllForConnector(st, name);   // GR10 / §12.4.5.9 GR6
         bool wantLock = phrase == FileRecordLock.WithLock && LocksEffective(meta, st, name);   // GR11
@@ -994,7 +1049,7 @@ public sealed class FileRegistry
             string pf = _physical.PreflightNewLock(st, name);   // §12.4.5.9 GR7 — the statement fails BEFORE the write (§14.9.51 GR15)
             if (pf != FileStatusCode.Success) { c.SetStatus(pf); return pf; }
         }
-        string status = WriteAnyOrg(c, image, length);
+        string status = WriteAnyOrg(c, image, length, page);
         if (wantLock && status.Length > 0 && status[0] == '0' && c.LastWrittenRecordId is { Length: > 0 } recId)
             _physical.LockRecord(st, name, recId);   // GR11 — the just-released record's lock is set
         return status;
@@ -1070,9 +1125,9 @@ public sealed class FileRegistry
 
     /// <summary>The plain WRITE body over any organization (one polymorphic dispatch — the governed entry's
     /// operation half; the sequential arm is the same connector call the ungoverned <see cref="Write"/> makes).</summary>
-    private static string WriteAnyOrg(FileConnector c, string image, int length) => c switch
+    private static string WriteAnyOrg(FileConnector c, string image, int length, LinagePage? page) => c switch
     {
-        SequentialConnector f => f.Write(image, length),
+        SequentialConnector f => f.Write(image, length, page),
         RelativeConnector r => r.Write(image, length),
         IndexedConnector ix => ix.Write(image, length),
         _ => FileStatusCode.PermanentError,
@@ -1186,7 +1241,11 @@ public sealed class FileRegistry
 
     // ── Internals ────────────────────────────────────────────────────────────────────────────────────────────
 
-    private string HostPathOf(string name) => _files.TryGetValue(name, out var c) ? c.HostPath : name;
+    /// <summary>The connector's LIVE §12.4.5.3 GR3 association — the resolved host path it is associated with
+    /// right now (an unknown name answers with the key itself, which the physical-file table treats as its own
+    /// bucket). Public because the association is a queryable property of the connector, not registry-private
+    /// state: it changes at every OPEN/SORT/MERGE, so nothing may cache it.</summary>
+    public string HostPathOf(string name) => _files.TryGetValue(name, out var c) ? c.HostPath : name;
 
     private void SetStatusOf(string name, string status)
     {
