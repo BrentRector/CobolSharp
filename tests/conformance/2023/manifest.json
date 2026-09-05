@@ -488,7 +488,10 @@
   "pb317_open_no_rewind",
   "pb323_open_presence_arms",
   "l1_table20_seq_relative",
-  "l1_table20_indexed"
+  "l1_table20_indexed",
+  "pb683_open_sharing_read_only",
+  "pb683_open_sharing_no_other",
+  "pb683_write_advancing_governed"
  ],
  "pending": [
   "pb485_value_only_format1"
