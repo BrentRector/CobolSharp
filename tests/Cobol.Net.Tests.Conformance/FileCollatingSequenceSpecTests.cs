@@ -110,6 +110,23 @@ public sealed class FileCollatingSequenceSpecTests
             + string.Join("\n", diagnostics));
     }
 
+    [Theory]   // §12.4.5.7.3 SR3: "Only one file-level format COLLATING SEQUENCE clause may be specified in one
+    [MemberData(nameof(KeyLevelEditions))]   // file control entry." The file-level format is Format 1 (the IS /
+                                             // FOR forms), counted separately from the key-level clauses above.
+    public void FileLevel_TwoClausesInOneFileControlEntry_Diagnosed(int edition)
+        => EditionHarness.AssertHasDiagnostic(EditionHarness.GetDiagnostics(Program("FCS006",
+            "COLLATING SEQUENCE IS REV",
+            "COLLATING SEQUENCE IS DREV"), edition), "at most one file-level");
+
+    [Theory]   // §12.4.5.7.3 SR4: "Data-name-1 shall be a name specified as the data-name in an ALTERNATE RECORD
+    [MemberData(nameof(KeyLevelEditions))]   // KEY clause or in a RECORD KEY clause in the file control entry."
+                                             // IX-DATA is a record item of IXF but no key of it, so the clause
+                                             // has nothing to apply alphabet-name-3 to.
+    public void KeyLevel_NameThatIsNotAKey_Diagnosed(int edition)
+        => EditionHarness.AssertHasDiagnostic(EditionHarness.GetDiagnostics(
+            Program("FCS007", "COLLATING SEQUENCE OF IX-DATA IS REV"), edition),
+            "is not a RECORD KEY or ALTERNATE RECORD KEY");
+
     [Fact]   // The edition gate (feedback_edition_gate_sweep): the file COLLATING SEQUENCE clause is a COBOL-2002
              // addition, so the SAME source the theories above accept is rejected at 85 — and rejected by the
              // GATE, never by SR8, which the one-clause repeat does not violate at any edition.
