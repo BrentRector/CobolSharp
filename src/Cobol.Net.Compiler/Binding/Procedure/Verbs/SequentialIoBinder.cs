@@ -253,15 +253,24 @@ internal sealed class SequentialIoBinder(BinderContext ctx, StatementBinder host
         // dropped the parsed phrase on the floor with no diagnostic at all, which is a strictly worse shape than
         // its relative twin in KeyedIoBinder (which at least bound it as dead): the rule has TWO arms and only
         // one of them was ever noticed (kb/Work PB144 — the two-arm dispatch again). A sequential REWRITE raises
-        // only 4x statuses, so nothing is rerouted either way; the phrase has no representation on BoundRewrite
-        // and needs none, because there is no '2x' invalid-key condition for it to carry.
+        // only 4x statuses, so nothing is rerouted either way.
+        // ⛔ PB144 STOPPED ONE STEP SHORT, and PB691's sweep of the identical WRITE arm found it: the screen
+        // landed but the phrase was still DROPPED, on the reasoning that "there is no '2x' invalid-key condition
+        // for it to carry". That is true of the INVALID arm and FALSE of the NOT INVALID arm — §9.1.14's final
+        // rule item 2 runs the NOT INVALID imperative on a SUCCESSFUL completion, which a sequential REWRITE
+        // certainly has — so under --permissive the tolerated phrase still meant nothing and printed nothing.
+        // Bound now, exactly as the WRITE arm above and as the keyed twin in KeyedIoBinder.BindRewrite.
+        KeyedInvalidKey? rinvalid = null;
         if (rw.rewriteInvalidKeyPhrase() is { } ik)
+        {
             ctx.Validation.ScreenForbiddenPhrase(true,
                 PhraseBlocks.StartsWithNot(ik) ? "NOT INVALID KEY" : "INVALID KEY", "REWRITE",
                 "a file with sequential organization", "ISO §14.9.35.3 SR2");
+            rinvalid = keyedIo.KeyedInvalidPhrase(ik.statementBlock(), PhraseBlocks.StartsWithNot(ik));
+        }
         return new BoundRewrite(file, record, WriteSource(rw.rewriteFrom()?.dataReference(), rw.rewriteFrom()?.literal(), rw.rewriteFrom()?.functionCall()),
             UnsupportedOrg(file, "REWRITE"))
-        { Lock = rlock, Retry = rretry };
+        { Lock = rlock, Retry = rretry, InvalidKey = rinvalid };
     }
 
     /// <summary>The FROM operand of a WRITE/REWRITE (a data reference or a literal), or null when absent.</summary>

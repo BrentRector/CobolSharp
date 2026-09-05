@@ -1009,6 +1009,14 @@ public sealed record BoundRewrite(FileModel File, Place Record, BoundOperand? Fr
     public BoundRecordLock Lock { get; init; } = BoundRecordLock.None;
     /// <summary>The RETRY phrase (§14.7.9 / §14.9.35 GR11), or null.</summary>
     public RetrySpec? Retry { get; init; }
+    /// <summary>The <c>INVALID KEY</c> / <c>NOT INVALID KEY</c> pair, which ISO §14.9.35.3 SR2's FIRST arm
+    /// forbids on a sequential-organization REWRITE — so it is non-null ONLY under <c>--permissive</c>, where
+    /// the COBOLNET1720 screen warns and the bind stands. PB144 landed the screen but still DROPPED the phrase,
+    /// on the reasoning that a sequential REWRITE has no '2x' condition for it to carry; that is true of the
+    /// INVALID arm and false of the NOT INVALID arm, which §9.1.14's final rule item 2 runs on a SUCCESSFUL
+    /// completion. Carrying the pair is the same correction PB691 made to <see cref="BoundWrite"/>, one method
+    /// away in the same binder.</summary>
+    public KeyedInvalidKey? InvalidKey { get; init; }
 }
 
 // ── Report Writer verbs (ISO §14.9.21 / §14.9.16 / §14.9.46; COBOLNET_REPORT_WRITER_DESIGN §5) ────────────────

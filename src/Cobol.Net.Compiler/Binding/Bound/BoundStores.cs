@@ -199,7 +199,8 @@ public static class BoundStores
             StoreKind.ReadWrite, n.AtEop, n.NotAtEop,                  // FROM-move then read as the image
             n.InvalidKey?.Invalid, n.InvalidKey?.NotInvalid);
         public StoreKind? Visit(BoundRead n) => StoreOrKids(Hit(n.Into), StoreKind.Write, n.AtEnd, n.NotAtEnd);
-        public StoreKind? Visit(BoundRewrite n) => n.From is not null && Hit(n.Record) ? StoreKind.ReadWrite : StoreKind.None;
+        public StoreKind? Visit(BoundRewrite n) => StoreOrKids(n.From is not null && Hit(n.Record),
+            StoreKind.ReadWrite, n.InvalidKey?.Invalid, n.InvalidKey?.NotInvalid);   // the --permissive pair (PB691)
         public StoreKind? Visit(BoundKeyedRead n) => StoreOrKids(Hit(n.Into), StoreKind.Write,
             n.AtEnd, n.NotAtEnd, n.InvalidKey?.Invalid, n.InvalidKey?.NotInvalid);
         public StoreKind? Visit(BoundKeyedWrite n) => StoreOrKids(n.From is not null && Hit(n.Record), StoreKind.ReadWrite,

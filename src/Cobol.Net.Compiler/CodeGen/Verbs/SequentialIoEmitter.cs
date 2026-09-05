@@ -550,8 +550,17 @@ internal sealed class SequentialIoEmitter(EmitContext ctx, NumericRenderer num, 
         }
         else
             w.Line($"{RuntimeApi.FileRewrite(FileKeyExpr(rw.File), image, VaryingLengthArg(rw.File))};");
+        // The §9.1.14 status snapshot for a --permissive INVALID KEY phrase, taken before the status store and
+        // the USE hook — the WRITE arm above carries the full reasoning (kb/Work PB691).
+        string? rst = null;
+        if (rw.InvalidKey is not null)
+        {
+            rst = $"__rwst{ctx.Names.NextKeyedSeq()}";
+            w.Line($"var {rst} = {RuntimeApi.FileStatus(FileKeyExpr(rw.File))};");
+        }
         EmitStoreFileStatus(rw.File);
-        EmitUseHook(rw.File);
+        EmitUseHook(rw.File);   // invalidKeyHandled stays false: no '2x' status is reachable here (§9.1.13.5)
+        if (rst is not null) EmitInvalid(rst, rw.InvalidKey);
     }
 
     /// <summary>Store a read record image into the FD record area: a character-image group distributes via FromImage;
