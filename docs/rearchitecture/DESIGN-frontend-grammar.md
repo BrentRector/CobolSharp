@@ -355,12 +355,30 @@ reserved word, the same distinction `IsBareFunctionArgumentWord` draws for §15 
 five conforming 2023 goldens into COBOL0001. They also carry no swallow risk: a function name leads no statement
 and no clause.
 
+⛔ **A KEYWORD SLOT MAY NOT BORROW `cobolWord` (kb/Work PB693).** The gate gives `cobolWord` one meaning —
+*user-defined word* — so a rule that used it to match a reserved KEYWORD that happens to carry a lexer token is
+broken at exactly the editions §8.9 reserves that word, and the parse-error path below then prints a FALSE
+"'W' … cannot be used as a user-defined word" over a slot where the program never used it as a name. One rule
+did: `validateStatusStage` (`Grammar/Core/CobolDeclined.g4`), the VALIDATE-STATUS clause's ON phrase, whose three
+choice indicators FORMAT / CONTENT / RELATION are all UNDERLINED in §13.18.62.2 — keywords (§5.2.2), not names.
+FORMAT is §8.9-reserved from 2002 and does have a token (the FD FORMAT clause, §13.18.24), so `ON FORMAT …`
+became a parse error at 2002+ instead of the declined-facility COBOLNET1708. **The fix is a token arm in the
+BORROWING rule, never an exclusion from the gate** — the word is reserved, and every other slot must keep
+rejecting it. The sweep behind that: FORMAT is the ONLY §8.9-reserved word carrying a lexer token that any rule
+expects `cobolWord` to match as a keyword. Every other keyword the grammar routes through `cobolWord` — LOCALE,
+ORDER, CLASSIFICATION, ATTRIBUTE, UCS-4/UTF-8/UTF-16, RELATION, NONE, RECEIVED, COBOL — is §8.10
+context-sensitive or unclassified by the standard, has NO lexer token, arrives as IDENTIFIER, and no gate can
+reach it. `computerAttributes`, the other word sink, is a raw `~(DOT | PROGRAM | CHARACTER)+` token loop and
+never enters `cobolWord` at all.
 **A REFERENCE to a gated word is answered by the parse-error path.** The gate leaves no name-slot alternative for
 `DISPLAY CONSTANT.` at `--std 2002`, and a source that fails to parse never reaches the bound-tree funnel. So
 `CobolErrorListener` asks the parser whether the offending token is reservation-gated (the generated
 `CobolLexer.IsReservationGated` set) and still rejects at this edition, and re-codes the diagnostic to
 COBOLNET0901 with the ONE message `ReservedWordSet.UserWordViolationMessage` owns. The cause is named in every
-position — reference slots included, which the funnel deliberately never screened.
+position — reference slots included, which the funnel deliberately never screened. It is named ONCE per
+occurrence of the word: ANTLR raises TWO syntax errors on one offending token (the prediction failure and
+`CobolErrorStrategy`'s recovery message), which read as two different sentences before the re-code and as the
+same sentence twice after it — and §8.3.2.1 rule 1 is broken once by one occurrence.
 
 ⛔ **Why this is generated and not written by hand (kb/Work PB300, CLAUDE.md rule 5).** The second half used to be
 a hand-written list of two words inside `CobolData.g4`'s `dataName`, paired with a hand-written
