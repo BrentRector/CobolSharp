@@ -629,7 +629,9 @@ internal sealed class ProcedureTableBuilder(BinderContext ctx)
             // USE statement within the same procedure division." The pair is the key (a bare exception-name-1
             // never gets here) and the STATEMENT is the boundary: the figure's inner `{ FILE file-name-2 } …`
             // and outer `…` both let ONE statement write a pair twice, which is not more than one statement.
-            // The '|' separator is unambiguous — neither part can contain it (§8.3.1.2 user-defined words).
+            // The '|' separator is unambiguous — neither part can contain it: every character of a COBOL word
+            // "shall be selected from the set of basic letters, basic digits, extended letters, and the basic
+            // special characters hyphen and underscore" (§8.3.2.1).
             switch (_useEcPairs.Register(ec + "|" + file.CobolName))
             {
                 case UseOperand.Repeated:
