@@ -99,42 +99,48 @@ internal sealed class SequentialIoEmitter(EmitContext ctx, NumericRenderer num, 
         }
     }
 
-    /// <summary>Install every LINAGE file's logical-page evaluator (ISO §13.18.34 GR6): ONE closure for both
-    /// the literal (GR6a — a constant lambda) and data-name (GR6b — the connector re-reads at OPEN OUTPUT /
-    /// ADVANCING PAGE / page overflow) forms. Emitted UNGUARDED in <c>__Activate</c> — installed on EVERY
-    /// activation, so the evaluator on a run-unit-scoped connector always closes over the CURRENT activation's
-    /// instance (kb/Work PB168: under the registration guard the FIRST activation's capture outlived it on a
-    /// UnitStaticFiles unit's shared connector, and a LINKAGE/LOCAL-STORAGE LINAGE operand read a dead
-    /// activation's data). Idempotent for a cached-singleton unit: the same delegate shape re-installs over
-    /// itself.</summary>
-    public void EmitLinageEvaluators(CodeWriter w)
+    /// <summary>⛔ THE EXECUTING RUNTIME ELEMENT'S OWN FILE-STATEMENT OPERANDS — the <c>assign, assignDynamic,
+    /// page</c> triple every emitted OPEN (and the SORT/MERGE implicit opens) passes, rendered HERE, inside the
+    /// element that runs the statement (kb/Work PB673).
+    /// <para><b>The rule.</b> ISO §12.4.5.3 GR3 makes the association an act of the STATEMENT — <i>"The
+    /// association occurs at the time of execution of an OPEN, SORT, or MERGE statement that referenced
+    /// file-name-1"</i> — and both arms name the element that performs it: a) <i>"identified by the specification
+    /// of device-name-1 or the value of literal-1 in the source unit that specifies the OPEN, SORT, or MERGE
+    /// statement"</i>, b) <i>"identified by the content of the data item referenced by data-name-1 in the runtime
+    /// element that executes the OPEN, SORT, or MERGE statement"</i>. §13.18.34 GR6 b) 1 does the same for the
+    /// LINAGE operands at the completion of an OPEN OUTPUT.</para>
+    /// <para><b>Why it cannot be installed on the connector.</b> A file connector is not per-element and not
+    /// per-activation: an EXTERNAL one is a single object per run unit shared by every describing element
+    /// (§13.18.22.4 GR4 a, whose file control entries §12.4.5.3 GR1 b requires only to be CONSISTENT — unlike
+    /// GR1 i's FILE STATUS, which must name the same external item), and a RECURSIVE unit's internal one is
+    /// unit-scoped last-used state across activations (§8.6.4 / §14.6.2.3.3, kb/Work PB168). A connector-held
+    /// closure therefore answered with whichever element/activation installed it LAST, which is the executing one
+    /// only by accident. Rendering the operands at the statement makes the right answer structural: the emitting
+    /// unit IS the executing element, and the emitted expression reads the LIVE activation's storage.</para>
+    /// <para>An unresolvable USING operand falls back to the static specification — <c>COBOLNET1810</c>/
+    /// <c>COBOLNET1811</c> (§12.4.5.2 SR7) have already rejected the program, so this only keeps emission
+    /// total.</para></summary>
+    internal string ExecutingElementArgs(FileModel file)
     {
-        foreach (var file in ctx.Data.Files)
-            if (file.Linage is { } lin)
-                w.Line($"{RuntimeApi.FileSetLinage(FileKeyExpr(file), $"() => ({LinageOpExpr(lin.Body)}, {LinageOpExpr(lin.Footing)}, {LinageOpExpr(lin.Top)}, {LinageOpExpr(lin.Bottom)})")};");
-    }
-
-    /// <summary>Install every ASSIGN … USING file's dynamic-assignment source (ISO §12.4.5.3 GR3 b — the connector is
-    /// associated with "a physical file identified by the content of the data item referenced by data-name-1 in the
-    /// runtime element that executes the OPEN, SORT, or MERGE statement"; §9.1.21, Dynamic file assignment). ONE
-    /// closure per file, read by the runtime at every OPEN/SORT/MERGE — the association is a per-statement act, not a
-    /// registration-time one, so the emitter installs a SOURCE and never a resolved path.
-    /// <para>Emitted UNGUARDED beside <see cref="EmitLinageEvaluators"/>, for the same reason (kb/Work PB168): the
-    /// closure captures THIS activation's instance, and a run-unit-scoped (RECURSIVE / UnitStaticFiles) connector
-    /// registers only once, so a guarded install would leave a dead activation's data item naming the file.</para>
-    /// <para>Every organization, SD excepted — an SD is the in-memory sort store with no host file, which is also
-    /// why <see cref="EmitFileRegistration"/> skips it.</para></summary>
-    public void EmitAssignSources(CodeWriter w)
-    {
-        foreach (var file in ctx.Data.Files)
-        {
-            if (file.IsSortMerge || file.AssignUsingItem is not { } item) continue;
-            if (refs.ResolveItem(item) is not { } p) continue;   // unresolvable storage: COBOLNET1810 already fired
+        string page = LinageArg(file);
+        if (file.AssignUsingItem is { } item && refs.ResolveItem(item) is { } p)
             // OperandText.FieldImage is THE operand-to-character-image renderer for every shape — an elementary
             // alphanumeric leaf reads its carrier, an alphanumeric group its generated AsImage(). No second arm.
-            w.Line($"{RuntimeApi.FileSetAssignUsing(FileKeyExpr(file), $"() => {OperandText.FieldImage(p)}")};");
-        }
+            return RuntimeApi.ExecutingElementArgs(OperandText.FieldImage(p), assignDynamic: true, page);
+        return RuntimeApi.ExecutingElementArgs(CsLiteral(file.AssignTarget), assignDynamic: false, page);
     }
+
+    /// <summary>The executing element's LINAGE operand values (ISO §13.18.34 GR6) as a <c>LinagePage</c>, or
+    /// <c>null</c> for an FD with no LINAGE clause. ONE rendering for both operand forms — GR6 a) literals fold to
+    /// constants, GR6 b) data-names render this element's field reads, evaluated by the runtime at the three GR6 b)
+    /// times (OPEN OUTPUT completion, WRITE ADVANCING PAGE, page-overflow WRITE). Passed by every OPEN and every
+    /// sequential WRITE entry, which is what makes the OO path (a class's FD) carry LINAGE for free: the statement
+    /// supplies it, so there is no per-registration install for a second emit path to forget.</summary>
+    internal string LinageArg(FileModel file) =>
+        file.Linage is { } lin
+            ? RuntimeApi.LinagePageExpr(LinageOpExpr(lin.Body), LinageOpExpr(lin.Footing),
+                LinageOpExpr(lin.Top), LinageOpExpr(lin.Bottom))
+            : "null";
 
     /// <summary>⛔ §14.9.30.4 GR15's RECORD-AREA CATEGORY, told to the connector (kb/Work PB327): "If the
     /// record-area associated with file-name-1 is specified implicitly or explicitly as ALPHANUMERIC, a trailing
@@ -144,10 +150,28 @@ internal sealed class SequentialIoEmitter(EmitContext ctx, NumericRenderer num, 
     /// long the physical record was — so it, not the emitter, must know which space to use. The area is national
     /// exactly when its OPERAND category is (an elementary national record, or a GROUP-USAGE NATIONAL group,
     /// §13.18.29.4 GR2b) — THE ONE category reader, never a re-derivation from the leaves. Emitted only for a
-    /// national area, so every other program's registration is unchanged byte for byte.</summary>
+    /// national area, so every other program's registration is unchanged byte for byte.
+    /// <para>⛔ ANY record description of the FD, not merely the WIDEST one (kb/Work PB329). §13.18.33.4 GR3 —
+    /// "Multiple level 1 entries subordinate to a FD or SD entry represent implicit redefinitions of the same
+    /// area" (§9.1.2's NOTE says the same) — makes every record description of an FD describe the SAME record
+    /// area, so an area one of them declares national IS "specified … as national"; and §14.9.51.4 GR21/GR22 —
+    /// the trailing-space rule <c>TrimRecordEnd</c>
+    /// implements — key on <i>record-name-1</i>, so a WRITE naming the national record must shed national
+    /// spaces whatever the sibling descriptions say. Keying on <see cref="FileModel.AreaRecord"/> alone read the
+    /// category off whichever description happened to be widest: <c>01 L-REC PIC N(4). 01 L-BYTES PIC X(8).</c>
+    /// (the shape of golden <c>2002/pb327_national_line_sequential_fill</c>) registered NOTHING, so that file's
+    /// line-sequential WRITE shed one 0x20 with <c>string.TrimEnd</c> and left a SEVEN-byte line ending in half
+    /// a national position — the exact trap PB327's own header describes — and the READ then re-padded it
+    /// alphanumerically back to the same eight bytes, so the defect was invisible in the golden's output.
+    /// It became visible the moment §14.9.51.4 GR23's character-set test needed the same flag.</para>
+    /// <para>⚠ RESIDUAL, and deliberately not modelled here: the flag is per-CONNECTOR while GR21/GR22 are per
+    /// record-name-1, so an FD carrying BOTH a national and an alphanumeric record description answers national
+    /// for both. Distinguishing them means carrying the category on the statement; no corpus program writes the
+    /// alphanumeric sibling of a national area, and inventing a second national axis to say so would be the
+    /// two-mechanism anti-pattern.</para></summary>
     internal static void EmitNationalAreaRegistration(CodeWriter w, FileModel file)
     {
-        if (file.AreaRecord is { } area && area.OperandPic is { Category: PicCategory.National })
+        if (file.Records.Any(r => r.OperandPic is { Category: PicCategory.National }))
             w.Line($"{RuntimeApi.FileRegisterNationalArea(FileKeyExpr(file))};");
     }
 
@@ -228,11 +252,11 @@ internal sealed class SequentialIoEmitter(EmitContext ctx, NumericRenderer num, 
                 // only the plain arm would report '07' for `OPEN INPUT F WITH NO REWIND` and '00' for the same
                 // statement once a SHARING phrase was added — the two-arm dispatch this whole item is an
                 // instance of (kb/Work PB317).
-                w.Line($"{RuntimeApi.FileOpenShared(FileKeyExpr(file), $"{modeEnum}, {shHas}, {shVal}, {retryKind}, {retryAmount}, {(noRewind ? "true" : "false")}")};");
+                w.Line($"{RuntimeApi.FileOpenShared(FileKeyExpr(file), $"{modeEnum}, {shHas}, {shVal}, {retryKind}, {retryAmount}, {(noRewind ? "true" : "false")}, {ExecutingElementArgs(file)}")};");
             }
             else
             {
-                w.Line($"{RuntimeApi.FileOpen(FileKeyExpr(file), mode, noRewind)};");
+                w.Line($"{RuntimeApi.FileOpen(FileKeyExpr(file), mode, noRewind, ExecutingElementArgs(file))};");
             }
             EmitStoreFileStatus(file);
             EmitUseHook(file);   // a failed OPEN reaches a mode-scoped USE via the being-opened mode (GR6b)
@@ -350,14 +374,14 @@ internal sealed class SequentialIoEmitter(EmitContext ctx, NumericRenderer num, 
             // COBOL-2023 combined BEFORE AND AFTER ADVANCING (§14.9.51 GR25e/GR25f): present the line at the current
             // position, then advance by the BEFORE amount and by the AFTER amount (both after presentation; SR17
             // forbids PAGE, so neither is a form feed). LINAGE-COUNTER increments by before+after.
-            w.Line($"{RuntimeApi.FileWriteBeforeAndAfter(name, image, LinesExpr(bfr.Lines!), LinesExpr(aft.Lines!))};");
+            w.Line($"{RuntimeApi.FileWriteBeforeAndAfter(name, image, LinesExpr(bfr.Lines!), LinesExpr(aft.Lines!), LinageArg(wr.File))};");
         }
         else if (wr.Advancing is { } adv)
         {
             // Print-control writes keep the plain entry: an ADVANCING stream is a presentation surface, not a
             // record store — its lines carry no record-lock identity (§9.1.16 locks LOGICAL RECORDS).
             string lines = adv.Page ? "-1" : LinesExpr(adv.Lines!);
-            w.Line($"{RuntimeApi.FileWriteAdvancing(name, image, lines, adv.Before ? "true" : "false")};");
+            w.Line($"{RuntimeApi.FileWriteAdvancing(name, image, lines, adv.Before ? "true" : "false", LinageArg(wr.File))};");
         }
         else if (LockGoverned(wr.File, wr.Lock, wr.Retry))
         {
@@ -365,10 +389,10 @@ internal sealed class SequentialIoEmitter(EmitContext ctx, NumericRenderer num, 
             // connector's prior lock, WITH LOCK locks the record written. Status lands on the connector.
             var (retryKind, retryAmount) = RenderRetry(wr.Retry);
             string lenArg = VaryingLengthArg(wr.File) ?? "-1";
-            w.Line($"{RuntimeApi.FileWriteShared(name, image, lenArg, RuntimeRecordLock(wr.Lock), retryKind, retryAmount)};");
+            w.Line($"{RuntimeApi.FileWriteShared(name, image, lenArg, RuntimeRecordLock(wr.Lock), retryKind, retryAmount, LinageArg(wr.File))};");
         }
         else
-            w.Line($"{RuntimeApi.FileWrite(name, image, VaryingLengthArg(wr.File))};");
+            w.Line($"{RuntimeApi.FileWrite(name, image, VaryingLengthArg(wr.File), LinageArg(wr.File))};");
         EmitStoreFileStatus(wr.File);
         EmitUseHook(wr.File);
         // END-OF-PAGE branches (ISO §14.9.51 GR27b/GR28): an end-of-page WRITE is SUCCESSFUL — the branch runs
@@ -387,11 +411,14 @@ internal sealed class SequentialIoEmitter(EmitContext ctx, NumericRenderer num, 
         }
     }
 
-    /// <summary>Render the governed sequential-READ call (§14.9.30 GR9–GR12/GR22 over the ordinal lock identity).</summary>
+    /// <summary>Render the governed sequential-organization READ call (§14.9.30.4 GR9–GR12 over the ordinal lock
+    /// identity, plus the GR22 skip-scan) as the plain read's BOOL. The runtime entry is the ONE governed
+    /// Format-1 read shared with the keyed emitter, so <c>previous</c> is passed explicitly — always false here,
+    /// because <see cref="BoundRead"/> carries no direction yet (kb/Work PB334).</summary>
     private string EmitReadSharedCall(BoundRead rd, string name, string tmp)
     {
         var (retryKind, retryAmount) = RenderRetry(rd.Retry);
-        return RuntimeApi.FileReadShared(name, RuntimeRecordLock(rd.Lock),
+        return RuntimeApi.FileReadSharedOk(name, "false", RuntimeRecordLock(rd.Lock),
             rd.AdvancingOnLock ? "true" : "false", rd.IgnoringLock ? "true" : "false",
             retryKind, retryAmount, tmp);
     }

@@ -465,16 +465,30 @@ statement.**"* §9.1.21 (Dynamic file assignment) is the concepts clause that na
 D.19.9.2's NOTE states the consequence outright: *"The MOVE statements only have an effect on the dynamic assignment
 when a subsequent OPEN statement for the file connector is executed."*
 
-**The shape.** `FileConnector.HostPath` is a settable property whose ONE writer is `FileConnector.Associate()`, and
-`FileRegistry` calls it from exactly three places: `Open`, `OpenShared` (which the emitted SORT/MERGE implicit opens
-also reach — §14.9.40.4 GR12a/GR15a, §14.9.24.4 GR7a) and `DeleteFile`'s unassociated screen. `Associate` is a no-op
-for the GR3 a) form — its association is static and fixed at registration — so both arms of GR3 run through one
-entry point rather than a register-time mechanism for TO and an open-time mechanism for USING. The emitter's part is
-to install a SOURCE, never a path: `SequentialIoEmitter.EmitAssignSources` writes one
-`CobolFile.SetAssignUsing(key, () => <data-name-1>)` per USING file, UNGUARDED on every activation, beside the LINAGE
-evaluator and for the same kb/Work PB168 reason (the closure must read THIS activation's instance). Both registration
-arms carry it: `DispatchEmitter.__Activate` for a program, the class constructor in `OoEmitter.EmitFileMembers` for an
-object — Annex D.19.9.2's own worked example is an instance file.
+**The shape — THE OPERANDS TRAVEL WITH THE STATEMENT.** `FileConnector.HostPath` is a settable property whose ONE
+writer is `FileConnector.Associate(spec, dynamic)`, and `FileRegistry.OpenCore` — the one OPEN dispatch that the plain
+`Open`, `OpenNoRewind`, `OpenShared` and the emitted SORT/MERGE implicit opens (§14.9.40.4 GR12a/GR15a, §14.9.24.4
+GR7a) all funnel through — is its only caller. `spec` is the EXECUTING element's own ASSIGN specification, rendered at
+the statement by `SequentialIoEmitter.ExecutingElementArgs(file)` and passed as an argument of the OPEN call; `dynamic`
+selects GR3 b)'s content rules over GR3 a)'s plain literal, so both arms of GR3 run through one entry point rather than
+a register-time mechanism for TO and an open-time mechanism for USING.
+
+**⛔ Why the source is an ARGUMENT and never state on the connector (kb/Work PB673).** Both arms of GR3 name the
+element that runs the statement — a) *"in the source unit that specifies the OPEN, SORT, or MERGE statement"*, b)
+*"in the runtime element that executes the OPEN, SORT, or MERGE statement"* — and a file connector is neither
+per-element nor per-activation. An EXTERNAL file connector is ONE object per run unit shared by every describing
+element (§13.18.22.4 GR4 a), whose entries §12.4.5.3 GR1 b) requires only to be CONSISTENT — unlike GR1 i), which
+makes FILE STATUS *the same* external item — so two programs may legally hold separate storage for data-name-1
+(COBOL.NET's GR1 b) consistency rule is textual sameness of the clause: `docs/CONFORMANCE.md` §7, `DOC-A.1-72`). A
+RECURSIVE non-INITIAL unit's internal connector is unit-scoped last-used state across activations (§8.6.4,
+§14.6.2.3.3) while its LOCAL-STORAGE is per-activation. An installed closure therefore answers with whichever
+element/activation installed it LAST, which is the executing one only by accident: the earlier
+`CobolFile.SetAssignUsing(key, () => <data-name-1>)` install (unguarded, for the kb/Work PB168 reason) opened the
+wrong physical file with status '00'. Rendering the operand at the statement makes the right answer structural —
+the emitting unit IS the executing element and the emitted expression reads the LIVE activation's storage — and the
+runtime entry points take the operands with NO DEFAULT, so an emitter path that forgets them is a compile error.
+Both emit paths get it from the same helper: the statement emitters for a program, and the same ones inside
+`OoEmitter`'s class bodies for an object — Annex D.19.9.2's own worked example is an instance file.
 
 **Why the sharing registry stopped caching the host path.** `ConnectorShare` used to hold a `Host` copy taken at
 `RegisterSharing` time, and every physical-file-table lookup (`ReadLockGovern`, `ReadShared`, `WriteShared`,
@@ -530,8 +544,9 @@ retryPhrase`) and `#recordLockPhrase` is bracket 2 (`WITH? NO LOCK | WITH? LOCK`
 printed bracket, which is what writes "at most one of these" down exactly once. `BoundRead` / `BoundKeyedRead`
 therefore carry FOUR fields, not one: `Lock` (the retention bracket), and `AdvancingOnLock` / `IgnoringLock` /
 `Retry` (the three alternatives of the contention bracket, at most one of which the grammar can deliver). The
-runtime mirrors it: `FileRecordLock` is the retention bracket alone, and `CobolFile.ReadShared` /
-`ReadLockGovern` take `advancingOnLock` and `ignoringLock` as their own arguments. WRITE and REWRITE reference
+runtime mirrors it: `FileRecordLock` is the retention bracket alone, `CobolFile.ReadShared` takes
+`advancingOnLock` and `ignoringLock` as their own arguments, and the Format-2 `ReadLockGovern` takes
+`ignoringLock` (ADVANCING ON LOCK is not in the Format-2 general format — D17). WRITE and REWRITE reference
 `recordLockPhrase` only, because §14.9.51.2 and §14.9.35.2 print `[ retry-phrase ]` and
 `[ WITH LOCK | WITH NO LOCK ]` and no IGNORING LOCK at all.
 
@@ -561,6 +576,54 @@ that may be OMITTED, not one that may be repeated. `readDirection` is now `NEXT 
 is optional at the call site. Neither spelling of the word was wrong on its own; having the same optional word in
 two rules was, and no test could see it because both single-`RECORD` spellings still parsed
 (`feedback_one_rule_one_place`).
+
+### D17. Record-lock governance on a READ is split by FORMAT, not by ORGANIZATION: one governed Format-1 read serves sequential, relative and indexed, and it owns the GR22 skip-scan.
+
+**The rule shape.** ISO §14.9.30.4 GR7–GR12 are ALL-FORMATS rules; GR22 is not. ADVANCING ON LOCK appears only
+in the **Format-1** general format (§14.9.30.2) and §14.9.30.3 SR6 bars it under ACCESS MODE RANDOM, so it is a
+phrase of the sequential-ACCESS read on **every organization** — sequential, relative and indexed alike. The
+compiler had split the governance the other way, by organization: `FileRegistry.ReadShared` (which carried the
+skip-scan) began `if (… c is not SequentialConnector) return false;`, and the keyed emitter called the post-read
+`ReadLockGovern`, which has no advancing-on-lock parameter at all. `BoundKeyedRead.AdvancingOnLock` was set by
+the binder, edition-gated by `VersionConformancePass`, and read by nothing: a relative or indexed
+`READ … ADVANCING ON LOCK` answered `'51'`, the one status GR22 rules out (kb/Work PB340).
+
+**Why GR22 needs no pre-read peek, on any organization.** The obvious repair — give the keyed read the
+sequential arm's PRE-read governed entry — is the wrong half of the truth. A pre-read conflict check exists for
+one reason: GR10 a) requires the file position indicator to be UNCHANGED when the record operation conflict
+condition arises, and only the sequential walk can name the record it is about to deliver (its next ordinal) —
+a relative or indexed walk selects "the first existing record … greater than the file position indicator"
+(GR21) and learns which that is by reading it. But GR22 states the conflict condition **does not exist**, and
+its model is explicitly post-read: *"as if the locked record were read and then the same READ statement were
+executed"*. The locked record IS read and the position DOES advance; that is the rule, not a compromise. So the
+skip is one `continue` after the physical step, shared by all three organizations.
+
+**The shape.** `FileRegistry.ReadShared(name, previous, phrase, advancingOnLock, ignoringLock, retry…, out image)`
+is the ONE governed Format-1 read and returns the **I-O status** (a record was made available iff it begins
+`'0'`), which is the more general of the two contracts the emitters need. Three collaborators, each the single
+place its rule is written:
+
+| member | rule |
+|---|---|
+| `ReadFormat1Step` | ONE physical NEXT/PREVIOUS retrieval on any organization — the step GR22 repeats |
+| `PeekFormat1RecordId` | GR9's pre-read conflict target where GR10 a) can be honoured; `""` where it cannot |
+| `ConflictOnLockedRecord` | GR9 + §14.7.9's RETRY, shared with the Format-2 `ReadLockGovern` |
+
+`SequentialIoEmitter` renders it through `RuntimeApi.FileReadSharedOk`, which wraps the call in `[0] == '0'` so
+its bool contract is unchanged; `KeyedIoEmitter` renders `KeyedReadKind.Next`/`Previous` through the same entry
+and keeps `ReadLockGovern` for the **Format-2** random read, where it is right: there is no next record to
+advance to and no ADVANCING phrase in that format. (The Format-2 post-read `'51'` still leaves the position
+advanced against GR10 a) — that is kb/Work PB338, untouched here and unaffected by this split.)
+
+**The binder half came with it.** §14.9.30.3 SR9 implies NEXT under ACCESS DYNAMIC "if any of the following
+phrases is specified: **ADVANCING**, AT END, or NOT AT END", and `KeyedIoBinder.BindRead` tested two of the
+three, so `READ f ADVANCING ON LOCK` bound as a Format-2 random read — the GR22 loop was unreachable for the one
+spelling SR9 exists to name (kb/Work PB335).
+
+**The drift test that generalises it.** `BoundIoPhraseConsumptionDriftTests` asserts that every phrase property
+declared by a bound I-O node is READ by its emitter, over all eight READ/WRITE/REWRITE/DELETE/START nodes. Three
+inventory rows were open for that one shape at once — this one, OPEN … WITH NO REWIND (PB317) and the sequential
+READ direction (PB334). It cannot see a phrase the BINDER never stored, which is PB334's remaining half.
 
 ## C# mapping
 
@@ -605,11 +668,13 @@ A process-wide registry keyed by external name (with an Area discriminator for r
 - Indexed: ascending-order WRITE in ACCESS SEQUENTIAL gives 21 on a non-increasing key; a duplicate prime or alt-without-duplicates gives 22; alt-with-duplicates gives 02; START supports a generic partial or prefix key compare (14.9.41) and positions inclusively so the next READ NEXT returns the matched record.
 - READ INTO and WRITE FROM lower to the verb plus a typed group MOVE (receiving uses the MAX length for ODO records, the ST146A lesson).
 - Record length mismatch on READ (a fixed file whose physical record differs from the FD size) gives status 04; add for conformance since the legacy pads silently.
-- LINE SEQUENTIAL: newline-framed, TrimEnd on WRITE, pad or truncate on READ, LastRecordLength is the line length; status 06 and 09 are deferred to the post-85 feature drive (`docs/ISO2023_CONFORMANCE_PLAN.md` catalog) — LINE SEQUENTIAL itself is not COBOL-85; see Per-edition gating.
+- LINE SEQUENTIAL: newline-framed, TrimEnd on WRITE, pad or truncate on READ, LastRecordLength is the line length; status **06 and 09 are both implemented** — 06 is the GR15 over-length truncation (the file position indicator keeps the unread remainder, NOTE 3), 09 the GR16 character-set warning below. LINE SEQUENTIAL itself is not COBOL-85; see Per-edition gating.
+- **The LINE SEQUENTIAL CHARACTER SET is ONE set behind FOUR rules** (`LineSequentialCharacterSet`, kb/Work PB329). Annex A.1 item 115 makes the set a REQUIRED, documented determination and the standard names it from four places: 14.9.30.4 GR16 / 9.1.13.2 item 7 (a SUCCESSFUL READ whose record area holds a non-member ⇒ '09', the record still delivered), 14.9.51.4 GR23 (WRITE ⇒ unsuccessful, '71'), 14.9.35.4 GR17 d) (REWRITE ⇒ unsuccessful, '71') and 9.1.13.10 item 1 (both write directions leave the record area — and the medium — unchanged). **The determination is: every character at code point U+0020 or above is a member; the C0 controls below it are not** (derivation and the GnuCOBOL survey at `docs/CONFORMANCE.md` DOC-A.1-115). Design consequences: (a) the set lives in ONE type and the connector reaches it through ONE predicate, `SequentialConnector.RecordAreaOutsideLineCharacterSet`, so the read arm and all THREE write entry points (`Write`, `WriteAdvancing`, `WriteBeforeAndAfter`) cannot diverge — before PB329 only REWRITE had an arm and it carried a private CR/LF test; (b) the subject is the RECORD AREA, tested CHARACTER-wise, so a national record area is read two bytes at a time as UTF-16BE exactly as `FitRecord`/`TrimRecordEnd` pad and trim it (a byte-wise test would refuse every national line sequential record); (c) GR16 is stated after GR15 and asks only that the read be successful, so '09' is the status that lands even on a truncated ('06') read.
+- **The RECORD-AREA CATEGORY flag (`NationalRecordArea`) is set from ANY of the FD's record descriptions, not from the widest one.** 13.18.33.4 GR3 — "Multiple level 1 entries subordinate to a FD or SD entry represent implicit redefinitions of the same area" — makes them all descriptions of ONE area, and 14.9.51.4 GR21/GR22 key the trailing-space rule on *record-name-1*, so a WRITE naming the national record must shed national spaces whatever a sibling description says. Keying on the widest description alone (the original PB327 selector) silently answered "alphanumeric" for `01 R PIC N(4). 01 B PIC X(8).`, so that FD's WRITE shed one 0x20 with `string.TrimEnd` and left a seven-byte line ending in half a national position; the READ then re-padded alphanumerically to the same eight bytes, so the golden that was meant to pin the national fill never exercised it. ⚠ The flag is per-CONNECTOR while GR21/GR22 are per record-name-1; an FD carrying both a national and an alphanumeric record description answers national for both. Carrying the category on the statement is the shape that would separate them, and it is deliberately not built while no corpus program writes the alphanumeric sibling of a national area — a second national axis to say so would be the two-mechanism anti-pattern.
 - CODE-SET translates only character (alphanumeric and DISPLAY-numeric digit) bytes, not COMP or COMP-3 binary fields (13.18.13); the default is the native ASCII set.
 - LINAGE:
   - **Counter-only physical model** (13.18.34 GR8 — "each logical page is contiguous to the next with no additional spacing"): the connector's pending-advance print stream is UNTOUCHED (no margin blank lines, nothing at page wrap; ADVANCING PAGE stays one `\f`); the whole feature is `SequentialFile`'s counter machine + `EndOfPage` flag + the LINAGE-COUNTER register. An ADVANCING or LINAGE file is forced to line-oriented output (a LINAGE file's plain WRITE reroutes to the advance-1 print path from its FIRST write — 14.9.51 GR25 / 13.18.34 GR7c3).
-  - **One evaluator closure for both operand forms** (13.18.34 GR6): the emitter registers `CobolFile.SetLinage(name, () => (body, footing, top, bottom))` right after `Register` — literals are constant lambdas (GR6a); data-names read their program fields at call time (GR6b). The connector invokes it at OPEN OUTPUT (GR6b1, with counter := 1 per GR7d) and at the two page transitions — the ADVANCING-PAGE reset (GR6b2) and the overflow wrap (GR6b3), AFTER the overflow decision against the OLD body, because "the value applies to the next logical page". Evaluating data-names at these page transitions (not only at OPEN) is required by GR6b2/GR6b3 — evaluating solely at OPEN is a conformance hole (SQ208M/SQ210M).
+  - **One statement-supplied operand set for both forms** (13.18.34 GR6): every OPEN and every sequential WRITE entry takes a `LinagePage?` — `SequentialIoEmitter.LinageArg(file)` renders `new LinagePage(body, footing, top, bottom)` from the file model (literals fold to constants, GR6a; data-names render the EXECUTING element's field reads, GR6b) or `null` for an FD with no LINAGE clause. The runtime adopts the values at OPEN OUTPUT (GR6b1, with counter := 1 per GR7d — `FileRegistry.SharedOpenAttempt` → `SequentialConnector.BeginLinagePage`, at the COMPLETION of a successful open as GR6b1 says) and at the two page transitions — the ADVANCING-PAGE reset (GR6b2) and the overflow wrap (GR6b3), AFTER the overflow decision against the OLD body, because "the value applies to the next logical page". Evaluating data-names at these page transitions (not only at OPEN) is required by GR6b2/GR6b3 — evaluating solely at OPEN is a conformance hole (SQ208M/SQ210M). **⛔ The page model is connector state; the operand SOURCE is not** (kb/Work PB673): a connector-held evaluator closure belonged to whichever activation installed it last, which for a RECURSIVE unit with a LOCAL-STORAGE operand is a RETURNED activation's dead storage — and it was installed on the program path only, so a class's LINAGE FD (`OoEmitter`) had no page model at all. `HasLinage` is gone with it: "this FD has a LINAGE clause" is now exactly "the statement supplied a page".
   - **GR26 operational mapping** (the legacy `AdvanceLinageCounter` ported verbatim, proven over the SQ goldens): with post-advance counter c, body B, footing F — `c > B` ⇒ overflow end-of-page, counter := 1 (GR26a + GR7c4; the reposition lands on line 1, never a modulo carry); else `F > 0 ∧ c ≥ F` ⇒ footing end-of-page (GR26b; the footing area is [F, B] INCLUSIVE per GR3, so c == B is FOOTING, and overflow fires only when positioning passes the body). ADVANCING PAGE: counter := 1, no observable EOP (SR18 bars PAGE+EOP). The counter advances in the CONNECTOR as part of EVERY write (EOP phrase or not), after the physical presentation — an AT branch reads the post-advance counter.
   - **LINAGE-COUNTER register** (8.4.3.14): runtime-sourced (`BoundLinageCounterRef` → `CobolFile.LinageCounter(name)`), never a synthesized storage item (only the IOCS modifies it, GR7b); qualified `OF/IN file-name` resolves via the grammar's dedicated alternative, unqualified requires exactly one LINAGE file (SR3/8.4.2.2, ambiguity is a bind-time diagnostic). `ReferenceResolver.Resolve` returns null for the register early (the qualified form's cobolWord is the FILE-name).
   - **END-OF-PAGE phrases** branch on `CobolFile.EndOfPage(name)` read in the `if` HEADER (a branch body may WRITE the same file — SQ208M); EOP is a SUCCESSFUL write (GR27a — status 00, no USE hook competition). Bind-time diagnostics: SR19 (EOP without LINAGE — the old silent-drop), SR18 (PAGE+EOP), SR13 (mnemonic ADVANCING on a LINAGE file).
@@ -805,4 +870,5 @@ three verbs and that a SORT returns exactly the records RELEASE named. (kb/Work 
 - Q7: the relative and indexed connector holds the file on-disk image as a byte array per record in memory (payload only; deserialized to the typed record only on hand-back; ordering by the typed CobolKey). This is the exact spot the owner objected to for program data. Accept the legitimate-confined-file-bytes framing, or switch to an all-typed sorted-dictionary-of-typed-records store? Lean: byte-image payload; a one-line flip if the owner prefers all-typed.
 - Q1: the on-disk format for relative, indexed, and variable-sequential files is an internal framed convention (4-byte little-endian prefix, 0xFF gaps), not a standard interchange format. Keep for v1, or does commercial quality demand an interoperable format such as a real ISAM or GnuCOBOL-compatible layout? Recommendation: keep plus add a pluggable file-format provider later.
 - Q2: indexed and relative persistence loads the whole file into memory on OPEN and flushes on CLOSE, fine for batch and NIST but not for multi-gigabyte files. Scope v1 to in-memory plus a later pluggable on-disk B-plus-tree or SQLite-backed backend?
-- Q4 and Q5 minor: implement LINE SEQUENTIAL status 06 and 09 now or defer them to the post-85 feature drive (`docs/ISO2023_CONFORMANCE_PLAN.md`)? Confirm SAME AREA buffer-only and SAME SORT-MERGE AREA are acceptable no-ops in a managed runtime.
+- Q4 — **RESOLVED: implemented, not deferred.** LINE SEQUENTIAL status 06 landed with the GR15 remainder machinery, and 09 landed with kb/Work PB329 together with the Annex A.1 item 115 determination it delegates to (`docs/CONFORMANCE.md` DOC-A.1-115) and the WRITE-side '71' arm (14.9.51.4 GR23) that had never existed. See the LINE SEQUENTIAL edge-case notes above.
+- Q5 minor: confirm SAME AREA buffer-only and SAME SORT-MERGE AREA are acceptable no-ops in a managed runtime.
