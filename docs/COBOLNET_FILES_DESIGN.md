@@ -7,7 +7,7 @@
 
 ## Summary
 
-Deep, decision-complete design for the COBOL.NET FILES subsystem (typed records, clean byte boundary). Core architecture: the FD or SD record IS a .NET record struct (the record area is a typed field, not a byte buffer); the only bytes are at the on-disk edge, produced by a compiler-GENERATED per-layout codec (Serialize and Deserialize) running only at READ and WRITE. CODE-SET is one Encoding parameter threaded into that codec. The proven 364-NIST legacy handlers are ported VERBATIM for control logic (open-mode tables, ISO-cited status codes, the file-position-indicator plus key-of-reference plus duplicate-arrival state machines) but re-substrated from a byte array to a generic FileConnector plus an IRecordCodec. Covers all organizations (SEQUENTIAL, LINE SEQUENTIAL, RELATIVE, INDEXED), all access modes, OPEN CLOSE READ WRITE REWRITE DELETE START (CLOSE dispatching on the §14.9.6.4 GR2 physical-file category through Table 14 — D11), FILE STATUS as a two-char string item, variable-length records, prime and composite ALTERNATE keys, SAME RECORD AREA, SORT and MERGE, and LINAGE. Ordering and lookup keys are a typed-derived CobolKey comparable (numeric by decoded value, alphanumeric by image plus collating, composite component-wise), decoupled from the stored payload; one comparison policy shared by indexed files and SORT.
+Deep, decision-complete design for the COBOL.NET FILES subsystem (typed records, clean byte boundary). Core architecture: the FD or SD record IS a .NET record struct (the record area is a typed field, not a byte buffer) — including for a file description entry written with NO record description entries, which §13.4.5.3 SR3 permits and which gets §14.9.30.4 GR6's implied entry synthesized at bind time (D18); the only bytes are at the on-disk edge, produced by a compiler-GENERATED per-layout codec (Serialize and Deserialize) running only at READ and WRITE. CODE-SET is one Encoding parameter threaded into that codec. The proven 364-NIST legacy handlers are ported VERBATIM for control logic (open-mode tables, ISO-cited status codes, the file-position-indicator plus key-of-reference plus duplicate-ordering state machines) but re-substrated from a byte array to a generic FileConnector plus an IRecordCodec. Covers all organizations (SEQUENTIAL, LINE SEQUENTIAL, RELATIVE, INDEXED), all access modes, OPEN CLOSE READ WRITE REWRITE DELETE START (CLOSE dispatching on the §14.9.6.4 GR2 physical-file category through Table 14 — D11), FILE STATUS as a two-char string item, variable-length records, prime and composite ALTERNATE keys, SAME RECORD AREA, SORT and MERGE, and LINAGE. Ordering and lookup keys are a typed-derived CobolKey comparable (numeric by decoded value, alphanumeric by image plus collating, composite component-wise), decoupled from the stored payload; one comparison policy shared by indexed files and SORT.
 
 ## Decisions
 
@@ -19,7 +19,7 @@ Deep, decision-complete design for the COBOL.NET FILES subsystem (typed records,
 
 ### D2. Port the three proven legacy handlers control logic verbatim but re-substrate to a generic FileConnector plus IRecordCodec.
 
-**Rationale.** That logic encodes hundreds of ISO 9.1.13 and 14.9.30-51 edge cases proven by 364 NIST tests; re-deriving it would re-discover every bug the legacy already fixed (stale alt-index, START inclusive-FPI, 43 and 46 read-position, ascending-WRITE 21, duplicate-arrival 02 and 26). It is orthogonal to the byte-vs-typed substrate; one connector per organization sharing one codec is the singular pattern.
+**Rationale.** That logic encodes hundreds of ISO 9.1.13 and 14.9.30-51 edge cases proven by 364 NIST tests; re-deriving it would re-discover every bug the legacy already fixed (stale alt-index, START inclusive-FPI, 43 and 46 read-position, ascending-WRITE 21, duplicate-key 02 and the GR26 duplicate order). It is orthogonal to the byte-vs-typed substrate; one connector per organization sharing one codec is the singular pattern.
 
 **Rejected alternatives.** Re-derive file semantics from scratch (loses 364 tests of edge-case knowledge); a single mega-connector with org branches (less cohesive).
 
@@ -128,6 +128,8 @@ or access mode:
 | §14.9.10.3 SR2 | INVALID KEY / NOT INVALID KEY | a DELETE RECORD referencing a file **in sequential access mode** |
 | §14.9.35.3 SR2 | INVALID KEY / NOT INVALID KEY | a REWRITE referencing **a file with sequential organization**, *or* a file with **relative organization and sequential access mode** |
 | §14.9.30.3 SR6 | ADVANCING / AT END / NEXT / NOT AT END / PREVIOUS | a READ whose file control entry specifies **ACCESS MODE RANDOM** |
+| §14.9.30.3 SR7 | PREVIOUS | a READ referencing a file with **LINE SEQUENTIAL organization** |
+| §14.9.30.2 Format 1 | INVALID KEY / NOT INVALID KEY | a READ referencing a file with **sequential organization** — every such READ is a Format-1 read (§12.4.5.5.2 SR2 → §14.9.30.3 SR8 → §14.9.30.4 GR19), and Format 1 has no INVALID KEY bracket |
 
 **What was wrong.** All three were bound unconditionally with a "tolerated in the default (CCVS-lenient) mode"
 comment and **no strict arm**, so at `--std 2023` strict the compiler accepted source the standard forbids and
@@ -147,7 +149,18 @@ under `--permissive`. Never a local `Permissive` test, never a parallel `Lenient
 branches make a phrase that cannot fire simply dead — a `'2x'` invalid-key branch on a sequential-access DELETE,
 a `'1x'` at-end branch on a random READ — never silently rerouted. That is what the CCVS-85 corpus depends on.
 
-**One code, three rules.** `COBOLNET1720` serves all three, on the `COBOLNET1694` precedent: the *shape* is one
+**The last two rows are kb/Work PB334, and they arrived the same way SR2's sequential arm did.** SR7 pairs an
+ORGANIZATION with a read DIRECTION, and `SequentialIoBinder.BindRead` never called `readDirection()` at all — so
+SR7 had **no attachment point anywhere in the compiler**, and a line-sequential `READ … PREVIOUS` was accepted and
+read FORWARD. §14.9.30.3 SR10 (the KEY phrase, a hard `COBOLNET0864`) and the Format-1 membership rule were the
+same omission on the same arm. All three now read their phrase; §14.9.30.3 SR6 and SR10 live in
+`StatementValidation` as ONE check each, called by BOTH READ binder arms, because a per-arm copy is precisely how
+they came to be enforced on one organization only. ⚠ READ's NOT INVALID KEY is the ONE phrase on this seam that is
+**not** dead under `--permissive`: §14.9.30.4 GR13c transfers control to it on a successful read, so
+`BoundRead.InvalidKey` carries it and `SequentialIoEmitter` renders the NOT arm (never the INVALID arm — a
+sequential READ raises no `'2x'` status).
+
+**One code, five rules.** `COBOLNET1720` serves all five, on the `COBOLNET1694` precedent: the *shape* is one
 rule ("a phrase is written where this statement's syntax rules forbid it") and each site's message quotes its own
 §/SR. §14.9.10.3 **SR1** (DELETE RECORD on a sequential-organization file) is deliberately **not** on this seam —
 it is a hard `COBOLNET0865` error at every edition and strictness, because it is not a documented leniency.
@@ -610,7 +623,7 @@ place its rule is written:
 | `ConflictOnLockedRecord` | GR9 + §14.7.9's RETRY, shared with the Format-2 `ReadLockGovern` |
 
 `SequentialIoEmitter` renders it through `RuntimeApi.FileReadSharedOk`, which wraps the call in `[0] == '0'` so
-its bool contract is unchanged; `KeyedIoEmitter` renders `KeyedReadKind.Next`/`Previous` through the same entry
+its bool contract is unchanged; `KeyedIoEmitter` renders `ReadKind.Next`/`Previous` through the same entry
 and keeps `ReadLockGovern` for the **Format-2** random read, where it is right: there is no next record to
 advance to and no ADVANCING phrase in that format. (The Format-2 post-read `'51'` still leaves the position
 advanced against GR10 a) — that is kb/Work PB338, untouched here and unaffected by this split.)
@@ -623,7 +636,46 @@ spelling SR9 exists to name (kb/Work PB335).
 **The drift test that generalises it.** `BoundIoPhraseConsumptionDriftTests` asserts that every phrase property
 declared by a bound I-O node is READ by its emitter, over all eight READ/WRITE/REWRITE/DELETE/START nodes. Three
 inventory rows were open for that one shape at once — this one, OPEN … WITH NO REWIND (PB317) and the sequential
-READ direction (PB334). It cannot see a phrase the BINDER never stored, which is PB334's remaining half.
+READ direction (PB334). It cannot see a phrase the BINDER never stored, which was PB334's remaining half — now
+landed: `BoundRead` carries `ReadKind` and `InvalidKey`, so the drift test covers that arm too, and
+`previous` reaches `ReadFormat1Step` / `PeekFormat1RecordId` from BOTH emitters.
+### D18. A file description entry with NO record description entries still has a record area, and it is SYNTHESIZED AT BIND TIME — ISO §14.9.30.4 GR6's implied entry, made real — never worked around at the consumers.
+
+ISO §13.4.5.3 SR3 expressly contemplates the shape: *"When no record description entries are specified: a) a
+RECORD clause shall be specified in the file description entry, b) a FILE phrase specifying file-name-1 and the
+FROM phrase shall be specified on all WRITE and REWRITE statements associated with the file, and c) an INTO
+phrase shall be specified on all READ statements associated with the file."* SR7 confines the *one or more record
+description entries* requirement to INDEXED files, so `FD FIN RECORD CONTAINS 20 CHARACTERS.` with no level-01 is
+legal on both the sequential and the relative organizations. §14.9.30.4 GR6 then says exactly what that file's
+record area IS: a READ INTO *"proceeds as though there were one record description entry describing an
+alphanumeric group item of the maximum size established by the RECORD clause"*.
+
+**The decision:** `DataBinder.MaterializeImpliedRecord` builds that entry — an unnamed level-01 GROUP over one
+FILLER `PIC X(n)` — as the last act of binding each FD, and everything downstream sees an ordinary record.
+`FileModel.AreaRecord` is consequently non-null for every FD that can be opened with data, and is null only for a
+REPORT file (§13.4.5.3 SR8 forbids it record descriptions) and for a SELECT with no FD at all.
+
+- **A GROUP, not an elementary `PIC X(n)`,** because the distinction is observable: §14.9.25.4 makes a MOVE whose
+  sender is a group item a group (alphanumeric) move, so `READ … INTO` a numeric receiver copies bytes where an
+  elementary alphanumeric sender would convert. GR6 says "group item".
+- **Unnamed and off `ByName`,** because the entry is implied: the program cannot reference it, which is precisely
+  why SR3 b) and c) require the `FILE … FROM` and `INTO` phrases on the verbs.
+- **The size is "the maximum size established by the RECORD clause"** — format 1's integer-1, format 3's
+  integer-5, format 2's integer-3. A format-2 clause with no `TO` phrase establishes none (§13.18.43.4 GR10
+  defers to "the greatest number of bytes described for a record in that file", and none is described), and
+  neither does an absent clause, which §13.4.5.3 SR3 a) and §13.18.43.3 SR1 forbid outright: **COBOLNET1836**.
+- **The two entry kinds that take SR3's permission back are SCREENS, not fallbacks: COBOLNET1837.** §13.4.5.3 SR7
+  (INDEXED) and §13.4.6.3 SR2 (sort-merge) both require record description entries, because both are keyed and a
+  key is located IN a record (§12.4.5.12.3 SR2; §14.9.40.3 SR6 a).
+
+**Rejected alternatives.** *Register the connector and leave `AreaRecord` null* — the shape this replaced: the
+record-less arm was asked TWICE and answered differently (`SequentialIoEmitter.EmitFileRegistration` registered
+only a REPORT file; `KeyedIoEmitter.EmitRegistration` returned outright), so both organizations produced NO file
+connector and the first I-O verb aborted the run unit — and repairing registration ALONE would only have turned
+the crash into a silent no-op, because the READ record-area store and the implicit INTO move were separately
+guarded on the same null. Five null arms for one absent fact is four too many (`feedback_one_rule_one_place`).
+*Synthesize at emit time instead* — the record has to exist for the binder's own record-area resolution
+(`ReferenceResolver.ResolveItem`), not just for the registration call.
 
 ## C# mapping
 
@@ -632,7 +684,7 @@ READ direction (PB334). It cannot see a phrase the BINDER never stored, which is
 > this section shows the primary RoslynBackend rendering. The future CilBackend renders the SAME bound nodes behind
 > `ICodeGenBackend` with its own private lowering; no bound node carries pre-rendered C# text.
 
-An FD record CUST-REC with CUST-ID PIC 9(5), CUST-NAME PIC X(20), CUST-BAL PIC S9(7)V99 COMP-3 maps to a public record struct CUST_REC holding public long CUST_ID, public string CUST_NAME, public long CUST_BAL, where CUST_BAL is the UNSCALED long (scale 2 is compile-time metadata per the owner numeric lock; no decimal). The record area is a single field of that type in the program class. The connector is a public sealed generic FileConnector of TRec exposing Open, Close, Read, ReadPrevious, ReadByKey, Write, Rewrite, Delete, Start, SetKey, plus properties CurrentSlot, LastRecordLength, EndOfPage, and LastStatus. There is NO program-supplied key parameter; the key is the current value of the typed RECORD KEY or RELATIVE KEY field. The codec is a generated IRecordCodec exposing Serialize, Deserialize, PrimeKey, AlternateKey, FixedLength, MinLength, MaxLength, and CodeSet. Stores: the sequential connector uses a StreamReader or StreamWriter for line-sequential and a FileStream for record-sequential with a 4-byte little-endian length prefix for varying; the relative connector uses a sorted dictionary from int slot to byte image with 0xFF gaps; the indexed connector uses a sorted dictionary from CobolKey to byte image as the sole source of truth, with alternates derived on demand and an arrival map for duplicate ordering. The run-unit prologue emits one registration per SELECT plus AddAlternateKey calls. After each I/O verb the compiler stores the connector LastStatus into the FILE STATUS item then branches AT END or INVALID KEY on the first char (1 at-end, 2 invalid-key, 3 4 7 9 fatal to a USE declarative). READ INTO lowers to Read plus a typed group MOVE; WRITE FROM lowers to a typed MOVE plus Write; a sequential RELATIVE WRITE or READ NEXT MOVEs CurrentSlot back into the RELATIVE KEY field.
+An FD record CUST-REC with CUST-ID PIC 9(5), CUST-NAME PIC X(20), CUST-BAL PIC S9(7)V99 COMP-3 maps to a public record struct CUST_REC holding public long CUST_ID, public string CUST_NAME, public long CUST_BAL, where CUST_BAL is the UNSCALED long (scale 2 is compile-time metadata per the owner numeric lock; no decimal). The record area is a single field of that type in the program class. The connector is a public sealed generic FileConnector of TRec exposing Open, Close, Read, ReadPrevious, ReadByKey, Write, Rewrite, Delete, Start, SetKey, plus properties CurrentSlot, LastRecordLength, EndOfPage, and LastStatus. There is NO program-supplied key parameter; the key is the current value of the typed RECORD KEY or RELATIVE KEY field. The codec is a generated IRecordCodec exposing Serialize, Deserialize, PrimeKey, AlternateKey, FixedLength, MinLength, MaxLength, and CodeSet. Stores: the sequential connector uses a StreamReader or StreamWriter for line-sequential and a FileStream for record-sequential with a 4-byte little-endian length prefix for varying; the relative connector uses a sorted dictionary from int slot to byte image with 0xFF gaps; the indexed connector uses a sorted dictionary from CobolKey to byte image as the sole source of truth, with alternates derived on demand and a PER-KEY release ordinal for duplicate ordering. The run-unit prologue emits one registration per SELECT plus AddAlternateKey calls. After each I/O verb the compiler stores the connector LastStatus into the FILE STATUS item then branches AT END or INVALID KEY on the first char (1 at-end, 2 invalid-key, 3 4 7 9 fatal to a USE declarative). READ INTO lowers to Read plus a typed group MOVE; WRITE FROM lowers to a typed MOVE plus Write; a sequential RELATIVE WRITE or READ NEXT MOVEs CurrentSlot back into the RELATIVE KEY field.
 
 ## Hard problems
 
@@ -656,6 +708,34 @@ For a record-sequential file the connector remembers the last-read frame start a
 
 Port the proven per-connector last-read-unsuccessful, past-end, prev-op-was-successful-read, and read-next-inclusive flags. An at-end READ is itself an unsuccessful READ (14.9.30 GR24 — "when the at end condition exists, execution of the READ statement is unsuccessful"), so once the last-read-unsuccessful flag is set the NEXT sequential READ — whether READ NEXT or READ PREVIOUS — is unsuccessful with status 46 (14.9.30 GR21); it does NOT re-expose the last record. A sequential REWRITE or DELETE with no immediately preceding successful READ is status 43 (14.9.35 GR5).
 
+### The READ DIRECTION is one fact on both bound READ nodes, and a backward sequential read is a REPOSITION feeding the same physical read body.
+
+§14.9.30.4 GR19 — "An implicit or explicit NEXT phrase or a PREVIOUS phrase results in a sequential read:
+otherwise, the read is a random read and the rules for format 2 apply" — makes the direction phrase and the
+FORMAT one fact, so ONE enum carries it: `ReadKind { Next, Previous, Random }`, on `BoundRead` and
+`BoundKeyedRead` alike, reached through `IBoundRead`. `VersionConformancePass.GateStatement` has ONE arm over
+that interface. (It was `KeyedReadKind`, reachable only from the keyed node; the sequential node had no direction
+member, so `READ … PREVIOUS` on a SEQUENTIAL file bound as a forward read AND skipped its COBOLNET0900 2002 gate
+— kb/Work PB334.)
+
+`SequentialConnector.Read(previous, out image)` implements GR21's "When the file is a sequential file" block
+directly: rule b) — the file position indicator established by a prior OPEN selects "the first existing record …
+regardless of whether NEXT or PREVIOUS is specified", so both directions target ordinal 1; rule c) — after a
+successful READ the target is one greater (NEXT) or one less (PREVIOUS); rule e) — no such record is the at end
+condition ('10' + the AT END imperative, GR24). `TargetReadOrdinal(previous)` is that arithmetic in one place, and
+it is also the §14.9.30.4 GR9 pre-read conflict target the sharing registry checks, so `ADVANCING ON LOCK`
+skip-scans in the statement's own direction — GR22 ends the scan at "the end of the file … if NEXT is specified or
+implied, or the beginning of file … if PREVIOUS is specified".
+
+A backward read is a **reposition**, not a second reader: `SeekToOrdinal` positions the stream at the record's
+first character and the ordinary read body then delivers it, which is what keeps `_lastReadBlockStart` (the
+in-place REWRITE anchor, §14.9.35.4 GR5) correct after a PREVIOUS. The offset is arithmetic on a fixed-width
+record-sequential file; on a RECORD VARYING file it comes from `RecordFraming.FrameStarts`, a prefix-only scan
+built **lazily on the first backward read**, so a forward READ walk pays nothing for a facility it never uses.
+LINE SEQUENTIAL has no backward walk and needs none — §14.9.30.3 SR7 forbids the phrase there — and a stream that
+cannot seek is not §14.9.30.4 GR20's "single reel/unit mass storage file", which the connector reports as the '30'
+permanent error rather than silently reading something else.
+
 ### EXTERNAL files shared across programs plus GLOBAL FD inheritance in nested programs, with matching layouts.
 
 A process-wide registry keyed by external name (with an Area discriminator for record sharing, porting IC227A); nested programs resolve the parent connector via a global registry (porting IC233A and 234A); the codec and layout must match across declarations.
@@ -666,6 +746,31 @@ A process-wide registry keyed by external name (with an Area discriminator for r
 - Sequential RELATIVE WRITE assigns the next slot and MOVEs it into the typed RELATIVE KEY field; READ NEXT exposes CurrentSlot for the same MOVE-back (14.9.51 sequential).
 - Random RELATIVE: key below 1 gives 34, an occupied slot gives 22 (INVALID KEY), an absent slot gives 23; sequential digit overflow gives 24, sequential READ digit overflow gives 14.
 - Indexed: ascending-order WRITE in ACCESS SEQUENTIAL gives 21 on a non-increasing key; a duplicate prime or alt-without-duplicates gives 22; alt-with-duplicates gives 02; START supports a generic partial or prefix key compare (14.9.41) and positions inclusively so the next READ NEXT returns the matched record.
+- **START is a THREE-organization verb** (kb/Work PB352). 14.9.41 writes its general rules three times, once
+  per organization heading — GR11/GR12 for RELATIVE, GR18/GR19 for INDEXED, GR20/GR21 for SEQUENTIAL — and
+  14.9.41.3 SR2 makes FIRST or LAST the REQUIRED phrase on a sequential-organization file, so the sequential
+  arm is not an extension but the only shape a conforming START on one can have. `SequentialConnector`
+  answers it over the ONE framing walk (`NextFrame`, extracted out of `Read` so START's record scan cannot
+  become a second copy of the line/varying/fixed framing rules): FIRST rewinds to record 1, LAST scans to the
+  last frame, each repositions the reader through `SeekToRecord` (which discards the buffered data and resets
+  the derived read state — the byte anchors, the GR15 unread remainder, the 9.1.16 record ordinal), and
+  positioning is INCLUSIVE per 14.9.30.4 GR21's sequential arm b). Every failure arm — an empty file, a
+  non-seekable stream, an absent OPTIONAL file — is '23' (9.1.13.5 item 3 b)/d)), never an abort; a wrong open
+  mode is '47' (9.1.13.7 item 7, Table 20's blank Output/Extend cells); an unsuccessful START arms 9.1.13.7
+  item 6 a)'s '46' on the next sequential READ. Goldens: `conformance:2002/pb352_start_sequential_first_last`
+  and the Sequential-row START cells of `conformance:2023/l1_table20_seq_relative`.
+- **The START key operand is screened by TWO rules with one home each** (kb/Work PB354).
+  `RecordLayout.KeyIndexOfKeyItem` answers "this IS a record key of the file" — by reference identity, or by
+  12.4.5.12.4 GR4's identical BYTE POSITIONS in another record description entry of the SAME file (hence
+  equal widths, never a prefix) — and it is what 14.9.30.3 SR11 (`READ … KEY`, which has no generic arm at
+  all) and 14.9.41.3 SR6 a) ask. `RecordLayout.GenericKeyIndex` answers SR6 b) alone, and enforces all three
+  of its conditions: leftmost-coincident *within a record of the file* (b 1.), the same class, category and
+  usage as that key (b 2. — via the ONE 8.5.2.1 Table-2 classifier), and no longer than it (b 3.). SR4's
+  "shall not be subject to any OCCURS clauses" is its OWN named check on BOTH organization arms, through
+  `RecordLayout.IsSubjectToOccurs`, ahead of the position walk — it used to be a side effect of the offset
+  walk bailing out, reported under SR6's message, and the relative arm had no such check at all. The same
+  predicate supplies the three key clauses' identical bans (12.4.5.12.3 SR1 RECORD KEY, 12.4.5.6.3 SR1
+  ALTERNATE RECORD KEY, 12.4.5.13.3 SR1 RELATIVE KEY) in `KeyedIoBinder.KeyedValidateFile`.
 - READ INTO and WRITE FROM lower to the verb plus a typed group MOVE (receiving uses the MAX length for ODO records, the ST146A lesson).
 - Record length mismatch on READ (a fixed file whose physical record differs from the FD size) gives status 04; add for conformance since the legacy pads silently.
 - LINE SEQUENTIAL: newline-framed, TrimEnd on WRITE, pad or truncate on READ, LastRecordLength is the line length; status **06 and 09 are both implemented** — 06 is the GR15 over-length truncation (the file position indicator keeps the unread remainder, NOTE 3), 09 the GR16 character-set warning below. LINE SEQUENTIAL itself is not COBOL-85; see Per-edition gating.
@@ -685,7 +790,7 @@ A process-wide registry keyed by external name (with an Area discriminator for r
 - Keyed record stores are PER PHYSICAL FILE, not per connector (kb/Work PB143; §14.9.10.4 GR5 — "removed from
   the physical file"): `KeyedStoreTable` (registry-owned, keyed by resolved host path — the same key
   `PhysicalFileTable` arbitrates sharing and locks by) holds ONE `RelativeStore` (RRN → image) or `IndexedStore`
-  (arrival-ordered records + the GLOBAL arrival mint) per host. The FIRST opener loads from disk; later openers
+  (the records plus the GLOBAL release-ordinal mint) per host. The FIRST opener loads from disk; later openers
   ATTACH to the live store (never reload — the in-memory store is the truth while any connector holds it); every
   DELETE/WRITE/REWRITE is instantly visible to every attached connector; any CLOSE persists the one shared state
   (close order cannot resurrect a deleted record or drop another connector's write); the LAST detach drops the
@@ -694,6 +799,21 @@ A process-wide registry keyed by external name (with an Area discriminator for r
   unconditional — two SELECTs to one ASSIGN target reach it with no SHARING clause — and sequential connectors
   are out of its scope (their OS-backed streams are already the shared store). A connector constructed outside a
   registry (a focused unit test) keeps a private store.
+- Indexed duplicate order is PER KEY OF REFERENCE, and the file position indicator is a KEY VALUE (kb/Work
+  PB341, PB342). 14.9.30.4 GR26 scopes the release order to "an alternate record key that is the key of
+  reference", and 14.9.35.4 GR24 a) freezes an untouched key's order across a REWRITE while b) moves the record
+  last under a changed one - so the release ordinal is a VECTOR on `KeyedRec`, one slot per key (slot 0 the
+  prime, assigned at release and never re-stamped, which makes it the record's physical release order too).
+  WRITE stamps one fresh ordinal into every slot; REWRITE re-stamps only the keys whose value or SUPPRESS WHEN
+  state changed, and "changed" is ONE predicate (KeyEq under the key's collating sequence, per GR24's closing
+  sentence) that GR24 a), GR24 b), GR24's suppression sub-rules and the 9.1.13.2 2 c) '02' all read.
+  14.9.41.4 GR17 e) 1. puts only a KEY VALUE in the file position indicator, so a START-seeded walk enters a
+  duplicate set at the end GR26 names for ITS direction - first-released forward, last-released backward - and
+  the duplicate-set position of a prior READ is separate connector state, which is what 14.9.30.4 GR21 rules
+  e)/f) name instead of the indicator. CLOSE persists a TOPOLOGICAL order of the per-key duplicate orders
+  (`IndexedConnector.PersistOrder`), so a reload - which can only give every key the file's own order -
+  reproduces all of them; with no REWRITE repositioning that IS release order, byte-identical to before. RESIDUE:
+  the per-key orders can be made mutually cyclic, and one sequence of record images cannot then carry them.
 - I-O status discipline (kb/Work PB140): `FileConnector.Status`'s setter is the ONE assignment path — it records `EverAccessed` AND drops the §9.1.13.7 3) '43' gate (READ terminals re-arm through `ReadSucceeded`); openness is the ONE base `_openMode` bit, separate from the `OptionalAbsent` file-position state a CLOSE leaves unchanged (§14.9.6.4 GR6); `FileRegistry` throws on an unregistered or misrouted name (never a fail-open '00' — the SD/organization screens reject at bind time, COBOLNET1692/1693); `FileConnector.Close` maps OS failures to '30' (§9.1.13.6 item 1) with the sequential streams nulled either way; CLOSE WITH LOCK locks only on a successful close.
 - Keyed-verb branch discipline (kb/Work PB325): the ACCESS MODE is the SOLE discriminator of a keyed verb's branch, and it lives in ONE place — `KeyedConnector.Access`, the abstract base `RelativeConnector` and `IndexedConnector` share. Every branch the standard draws inside a keyed verb is drawn on it (§14.9.51.4 GR29 a)/b), GR38/GR39; §14.9.35.4 GR5 vs. GR21/GR22/GR23; §14.9.10.4 GR2 vs. GR3/GR4), and the OPEN MODE enters only as the permission test that FOLLOWS — Table 20 (§14.9.27.4 GR8), whose unsuccessful cells §9.1.13.7 items 8 and 9 name. ⛔ An open mode in a branch PREDICATE inverts that dependency: `_access == Sequential || Mode == Extend` made the runtime's answer depend on an unenforced bind-time screen (§14.9.27.3 SR2) and turned Table 20's blank Random/Dynamic × WRITE × Extend cell into a successful append instead of item 8 b)'s '48'. The whole table is walked by conformance:2023/l1_table20_seq_relative + l1_table20_indexed and, for the cell conforming source cannot reach, unit:Table20WriteOpenModeTests.
 - READ preconditions live in the BASE, once, in the standard's own order (kb/Work PB336). `FileConnector` owns
@@ -709,8 +829,17 @@ A process-wide registry keyed by external name (with an Area discriminator for r
   sequential one: GR21 opens "For a sequential READ statement" so a random READ never yields '46', and item 3 b)
   has no "first time" qualifier so every random READ on an absent optional file is '23' — but the failed random
   READ still arms the poison, because §9.1.13.7 item 6 b) ("The preceding READ statement …") is not restricted to
-  sequential reads. START's own absent-optional rule (§14.9.41 GR5) is a different statement's rule and stays in
-  the keyed connectors.
+  sequential reads. START's own absent-optional rule (§14.9.41 GR5) is a different statement's rule and lives in
+  each connector's own START body.
+- **START's preconditions live in the same base, for the same reason** (kb/Work PB352). `FileConnector` owns
+  `StartOpenModeGuard` — 14.9.41.4 GR1's "input or I-O" test, whose unsuccessful value is 9.1.13.7 item 7's
+  '47' and whose blank cells are Table 20's — and the virtual `InvalidateFilePosition`, which is GR7 ("the file
+  position indicator is set to indicate that no valid record position has been established"). The guard applies
+  GR7 on the way out, because a refused START is an unsuccessful one: GR1's test had been written out FIVE
+  times (twice in each keyed connector, once in the sequential arm) and every copy returned '47' leaving the
+  indicator alone. A keyed connector overrides `InvalidateFilePosition` to clear its FPI VALIDITY BIT as well —
+  its indicator is a key value plus a bit, where the sequential connector's is the stream position — and each
+  connector's `StartFail` is that invalidation plus the invalid key condition's '23'.
 - SAME AREA buffer-only and SAME SORT-MERGE AREA are no-ops in a managed runtime (pure memory-layout optimizations with no observable behavior).
 
 ## Per-edition gating (G1 — four compilers in one `cobol.exe`)
@@ -725,10 +854,18 @@ rows; derive 85↔2002 gating from the 2002 standard / the ISO2023_CONFORMANCE_P
 - **DELETE FILE (14.9.10 Format 2) is NEW in 2023** (rows 58/78; E.3.3 items 15/35): rejected with a
   not-yet-introduced diagnostic under `--std` 85/2002/2014; its statuses 05/37/39/41/62 from DELETE FILE exist only
   at 2023. (Format-1 record DELETE is 85.)
-- **READ PREVIOUS is not COBOL-85** (a 2002 introduction — derive from the 2002 standard): rejected at 85. Its
-  behavior ALSO changed 2014→2023 (row 29): READ PREVIOUS immediately after OPEN retrieves the first record at 2014
-  but raises the at-end condition at 2023 — the connector's read-position state machine must take the target
-  edition. FLAG-14 flags every READ PREVIOUS (row 108).
+- **READ PREVIOUS is not COBOL-85** (a 2002 introduction — derive from the 2002 standard): rejected at 85 on
+  EVERY organization (the gate is one `IBoundRead` arm in the VersionConformancePass; it used to be two arms and
+  the sequential one did not carry it — kb/Work PB334). FLAG-14 flags every READ PREVIOUS (row 108).
+  ⚠ **The 2014→2023 after-OPEN change (row 29) is the INDEXED leg only.** Annex E.2 item 22 ("READ PREVIOUS
+  statement following an OPEN statement. Ensure that an at end condition occurs.") is INFORMATIVE and names the
+  rule it amended: §14.9.30.4 GR21's indexed sub-rule d.3, which in the 2023 text reads "If no such record is
+  found or PREVIOUS is specified and the previous operation on the file was an OPEN statement, the at end
+  condition exists." The RELATIVE and SEQUENTIAL sub-rule blocks print rule b) unamended — "the first existing
+  record that is selected is made available, regardless of whether NEXT or PREVIOUS is specified" — so on those
+  two organizations the after-OPEN behaviour is **identical at 2002, 2014 and 2023** and the connector takes no
+  edition parameter for it. The sequential leg is asserted at all three editions by
+  `conformance:{2002,2014,2023}/pb334_read_previous_sequential`; the relative leg is kb/Work PB343.
 - **ORGANIZATION LINE SEQUENTIAL is not a COBOL-85 organization**: rejected at 85. The exact introduction edition is
   not derivable from the 2023 spec (no ledger row; the ledger has no 85→2002 row set) — derive it from the 2002
   standard before gating.
