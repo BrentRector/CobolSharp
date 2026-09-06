@@ -164,8 +164,9 @@ alphabetClause
     : ALPHABET cobolWord specialNamesForPhrase? IS? alphabetDefinition specialNamesForPhrase?
     ;
 
-// ⛔ THE ONE `FOR {ALPHANUMERIC | NATIONAL}` PHRASE OF §12.3.7.2 — the ALPHABET clause, the CLASS clause and the
-// SYMBOLIC CHARACTERS clause all print it, and until kb/Work PB695 each spelled its own copy. The copies drifted
+// ⛔ THE ONE `FOR {ALPHANUMERIC | NATIONAL}` PHRASE OF THE SPECIAL-NAMES PARAGRAPH (ISO §12.3.7.2) — its ALPHABET
+// clause, its CLASS clause and its SYMBOLIC CHARACTERS clause
+// all print it, and until kb/Work PB695 each spelled its own copy. The copies drifted
 // exactly where a copy always drifts: the ALPHABET one was a subrule and its 2002 gate tested the SUBRULE, while
 // the other two were inline groups whose gates tested `ctx.FOR()` — an OPTIONAL WORD, so relaxing FOR anywhere
 // would have silently switched those two edition gates off. One rule, one gate shape, one place to relax.
