@@ -2,6 +2,7 @@
 // Licensed under the Business Source License 1.1. See LICENSE file in the project root.
 using CobolNet.Binding.Bound;
 using CobolNet.Binding.Model;
+using CobolNet.Editions.Diagnostics;
 using CobolNet.Frontend.Generated;
 
 namespace CobolNet.Binding.Procedure;
@@ -47,61 +48,58 @@ internal sealed class KeyedIoBinder(BinderContext ctx, StatementBinder host, Fil
         bool next = r.readDirection()?.NEXT() is not null;
         bool previous = r.readDirection()?.PREVIOUS() is not null;
         // READ PREVIOUS (§14.9.30 Format 1) is a COBOL-2002 introduction; the edition gate moved to the post-bind
-        // VersionConformancePass (Step 14c), firing on BoundKeyedRead.Kind == Previous.
+        // VersionConformancePass (Step 14c), firing on the IBoundRead.Kind both READ nodes now share.
 
-        // §14.9.30.3 SR6 — "None of the phrases ADVANCING, AT END, NEXT, NOT AT END, or PREVIOUS shall be
-        // specified if ACCESS MODE RANDOM is specified in the file control entry for file-name-1." Gated through
-        // the ONE severity seam (kb/Work PB144): an error under strict, a warning under --permissive with the
-        // bind UNCHANGED, because the CCVS-85 corpus is lenient about phrase placement (the L1–L3 family) and
-        // the emitter's status-first branches make a phrase that cannot fire ('1x' on a random read) simply
-        // dead, never silently rerouted. SR10/SR11 (the KEY phrase) are hard errors below and always were.
-        if (file.AccessMode == FileAccessMode.Random)
+        // §14.9.30.3 SR6 — the ONE check, shared with the sequential arm (kb/Work PB334). Gated through the ONE
+        // severity seam (kb/Work PB144): an error under strict, a warning under --permissive with the bind
+        // UNCHANGED, because the CCVS-85 corpus is lenient about phrase placement (the L1–L3 family) and the
+        // emitter's status-first branches make a phrase that cannot fire ('1x' on a random read) simply dead,
+        // never silently rerouted. SR10/SR11 (the KEY phrase) are hard errors below and always were.
+        ctx.Validation.CheckReadRandomAccessPhrases(file, contention?.readAdvancingOnLock() is not null,
+            atEnd is not null, notAtEnd is not null, next, previous);
+        ReadKind kind = file.AccessMode switch
         {
-            var present = new List<string>();
-            if (contention?.readAdvancingOnLock() is not null) present.Add("ADVANCING");
-            if (r.readAtEnd() is { } ae6) present.Add(PhraseBlocks.StartsWithNot(ae6) ? "NOT AT END" : "AT END");
-            if (next) present.Add("NEXT");
-            if (previous) present.Add("PREVIOUS");
-            if (present.Count > 0)
-                ctx.Validation.ScreenForbiddenPhrase(true, string.Join(" / ", present), "READ",
-                    "a file whose file control entry specifies ACCESS MODE RANDOM", "ISO §14.9.30.3 SR6");
-        }
-        KeyedReadKind kind = file.AccessMode switch
-        {
-            FileAccessMode.Random => KeyedReadKind.Random,
+            FileAccessMode.Random => ReadKind.Random,
             // §14.9.30.3 SR9 — dynamic: "the NEXT phrase is implied if any of the following phrases is
             // specified: ADVANCING, AT END, or NOT AT END". ⛔ ALL THREE, not two: while ADVANCING was missing
             // from this test, `READ f ADVANCING ON LOCK` on a DYNAMIC file bound as the Format-2 random read,
             // where ADVANCING ON LOCK is not even in the general format — so the GR22 skip-scan could not run
             // for the one spelling SR9 exists to name (kb/Work PB340). A bare READ under dynamic access, with
             // none of the three, stays the Format-2 random read.
-            FileAccessMode.Dynamic => previous ? KeyedReadKind.Previous
+            FileAccessMode.Dynamic => previous ? ReadKind.Previous
                 : next || contention?.readAdvancingOnLock() is not null || r.readAtEnd() is not null
-                    ? KeyedReadKind.Next
-                    : KeyedReadKind.Random,
+                    ? ReadKind.Next
+                    : ReadKind.Random,
             // §14.9.30 SR8 — sequential access: NEXT implied.
-            _ => previous ? KeyedReadKind.Previous : KeyedReadKind.Next,
+            _ => previous ? ReadKind.Previous : ReadKind.Next,
         };
 
         int keyIndex = -1;   // the prime record key (GR31) / the relative key item (GR29) when no KEY phrase
         if (r.readKey()?.dataReference() is { } keyRef)
         {
-            // SR10: the KEY phrase only for indexed organization; SR11: it names a declared (prime or alternate)
-            // key — matched by STORAGE POSITION, not name (§12.4.5.12 GR4: the key's character positions are
-            // implicitly keys in EVERY record description of the file; covers REDEFINES and duplicate names).
-            if (file.Organization != FileOrganization.Indexed)
-                ctx.Edition.Error("COBOLNET0864", $"READ … KEY on '{file.CobolName}': the KEY phrase may be "
-                    + "specified only when ORGANIZATION IS INDEXED (ISO §14.9.30 SR10)");
-            else if (kind != KeyedReadKind.Random)
-                ctx.Edition.Error("COBOLNET0864", $"READ … KEY on '{file.CobolName}' is a Format-2 phrase and "
-                    + "cannot combine with NEXT/PREVIOUS/AT END (ISO §14.9.30 general formats)");
-            else if (ctx.Refs.Resolve(keyRef) is not { } keyPlace || Model.RecordLayout.KeyIndexByPosition(file, keyPlace.Item) is not { } ki)
+            // SR10 — ⛔ NOT WRITTEN HERE: `StatementValidation.CheckReadKeyOrganization` is the ONE site, so the
+            // sequential arm enforces the SAME rule with the SAME diagnostic (kb/Work PB334). A violation is
+            // REPORTED and the bind continues with the default key of reference (kb/Work PB236); SR11 below is
+            // then not asked, because a file that is not INDEXED has no RECORD KEY for it to name.
+            // SR11: the operand names a declared (prime or alternate) key — matched by identity OR by STORAGE
+            // POSITION (§12.4.5.12.4 GR4: the key's identical BYTE POSITIONS are implicitly keys in EVERY record
+            // description of the file; covers REDEFINES and duplicate names). ⛔ SR11 has NO generic-key arm —
+            // "Data-name-1 or record-key-name-1 shall be specified in the RECORD KEY clause or an ALTERNATE
+            // RECORD KEY clause associated with file-name-1" — so it asks `RecordLayout.KeyIndexOfKeyItem`, the
+            // IDENTITY answer, never START's SR6 b) generic screen (kb/Work PB354).
+            if (ctx.Validation.CheckReadKeyOrganization(file))
             {
-                ctx.Edition.Error("COBOLNET0864", $"READ … KEY IS {keyRef.GetText()} on '{file.CobolName}': the "
-                    + "operand shall be the RECORD KEY or an ALTERNATE RECORD KEY of the file (ISO §14.9.30 SR11)");
-                return new BoundNop();   // reported above — not a deferral (kb/Work PB236)
+                if (kind != ReadKind.Random)
+                    ctx.Edition.Error("COBOLNET0864", $"READ … KEY on '{file.CobolName}' is a Format-2 phrase and "
+                        + "cannot combine with NEXT/PREVIOUS/AT END (ISO §14.9.30 general formats)");
+                else if (ctx.Refs.Resolve(keyRef) is not { } keyPlace || Model.RecordLayout.KeyIndexOfKeyItem(file, keyPlace.Item) is not { } ki)
+                {
+                    ctx.Edition.Error("COBOLNET0864", $"READ … KEY IS {keyRef.GetText()} on '{file.CobolName}': the "
+                        + "operand shall be the RECORD KEY or an ALTERNATE RECORD KEY of the file (ISO §14.9.30 SR11)");
+                    return new BoundNop();   // reported above — not a deferral (kb/Work PB236)
+                }
+                else keyIndex = ki;
             }
-            else keyIndex = ki;
         }
         // READ … ADVANCING ON LOCK (§14.9.30 record-lock phrase, COBOL-2002); the edition gate moved to the
         // post-bind VersionConformancePass (Step 14c), firing on BoundKeyedRead.AdvancingOnLock.
@@ -239,21 +237,28 @@ internal sealed class KeyedIoBinder(BinderContext ctx, StatementBinder host, Fil
 
     // ── START (ISO §14.9.41) ───────────────────────────────────────────────────────────────────────────────────
 
-    /// <summary>Bind START. SR1: access shall be sequential or dynamic; SR3: NOT EQUAL is not a valid operator;
-    /// SR5: a relative operand shall be the RELATIVE KEY item; SR6: an indexed operand names a key or a
-    /// leftmost-coincident shorter item (a generic key, matched by storage position); GR8/GR15: a missing KEY
-    /// phrase means EQUAL on the relative key / prime key. FIRST/LAST are 2002+ (edition-gated here).</summary>
+    /// <summary>Bind START, all THREE organizations. SR1: access shall be sequential or dynamic; SR2: a
+    /// sequential-organization file admits ONLY the FIRST/LAST forms; SR3: NOT EQUAL is not a valid operator;
+    /// SR4: neither operand may be subject to an OCCURS clause; SR5: a relative operand shall be the RELATIVE
+    /// KEY item; SR6: an indexed operand is a record key (a) or a same-class/category/usage leftmost-coincident
+    /// shorter item (b — the generic key); SR8: WITH LENGTH requires indexed organization; GR8/GR15: a missing
+    /// KEY phrase means EQUAL on the relative key / prime key. FIRST/LAST are 2002+ (gated on the bound node's
+    /// Mode by the post-bind VersionConformancePass).</summary>
     public BoundStatement BindStart(Core.StartStatementContext st)
     {
         string name = st.fileName().GetText();
         // The ONE file-name resolution step (kb/Work PB236 — §8.4.2.1 through COBOLNET1639).
         if (!ctx.Validation.ResolveFile(name, "START", out var file)) return new BoundNop();
-        if (file.IsSequential)
-            return new BoundUnsupported($"START on sequential-organization file '{name}' "
-                + "(ISO §14.9.41 SR2 FIRST/LAST positioning — a later slice)");
+        // §9.1.19 / §13.4.6.3 SR3: "The only statements that may reference a sort file are the RELEASE, RETURN,
+        // and SORT statements." START was the ONE keyed verb that skipped this screen (BindDelete,
+        // BindDeleteFile, BindClose and SequentialIoBinder.UnsupportedOrg all call it — the PB140 consolidation),
+        // so an SD whose SELECT carried ORGANIZATION INDEXED accepted a START and ran against an unregistered
+        // connector (kb/Work PB352).
+        if (ctx.Validation.ScreenSortMergeFile(file, "START") is not null)
+            return new BoundNop();   // the screen REPORTED; a loud runtime stage on top would re-answer it (PB236)
         KeyedValidateFile(file);
         if (file.AccessMode == FileAccessMode.Random)
-            ctx.Edition.Error("COBOLNET0862", $"START on '{name}': the access mode shall be sequential or "
+            ctx.Edition.Error(DiagnosticCatalog.IoStatementOperandRule, $"START on '{name}': the access mode shall be sequential or "
                 + "dynamic (ISO §14.9.41 SR1)");
         KeyedInvalidKey? invalid =
             st.startInvalidKeyPhrase() is { } ik ? KeyedInvalidPhrase(ik.statementBlock(), PhraseBlocks.StartsWithNot(ik)) : null;
@@ -261,34 +266,68 @@ internal sealed class KeyedIoBinder(BinderContext ctx, StatementBinder host, Fil
         if (st.FIRST() is not null || st.LAST() is not null)
         {
             // START FIRST/LAST (§14.9.41) is a COBOL-2002 introduction; the edition gate moved to the post-bind
-            // VersionConformancePass (Step 14c), firing on BoundKeyedStart.Mode ∈ {First, Last}.
+            // VersionConformancePass (Step 14c), firing on BoundKeyedStart.Mode ∈ {First, Last}. This is the
+            // ONLY form §14.9.41.3 SR2 leaves open on a sequential-organization file, and it binds for all three
+            // organizations — the connector answers GR11/GR12 (relative), GR18/GR19 (indexed) or GR20/GR21
+            // (sequential) on the ONE CobolFile.StartFirstLast entry.
             return new BoundKeyedStart(file, st.LAST() is not null ? KeyedStartMode.Last : KeyedStartMode.First,
                 "==", -1, null, null, invalid);
         }
 
+        // ── The organization-INDEPENDENT syntax rules, ALL of them, before any arm bails ────────────────────
+        // ⛔ EVERY RULE A STATEMENT VIOLATES GETS REPORTED (kb/Work PB352). SR3, SR4 and SR8 constrain the KEY
+        // phrase whatever the organization is, so they are screened here, above SR2's sequential rejection and
+        // above the operand-resolution bail — each of which used to swallow the rules below it. Measured before
+        // the reorder: `START SQF KEY IS = SQ-REC WITH LENGTH 2` on a sequential file violates SR8 AND SR2 and
+        // reported NEITHER.
         var kp = st.startKeyPhrase();
         string op = kp?.comparisonOperator() is { } oc ? ConditionBinder.MapOperator(oc.GetText()) : "==";   // GR8/GR15 — EQUAL
         if (op == "!=")
         {
-            ctx.Edition.Error("COBOLNET0862", $"START on '{name}': the relational operator shall not be "
+            ctx.Edition.Error(DiagnosticCatalog.IoStatementOperandRule, $"START on '{name}': the relational operator shall not be "
                 + "'IS NOT EQUAL TO' (ISO §14.9.41 SR3)");
             op = "==";
         }
+        // WITH LENGTH (§14.9.41 GR13–GR14 partial-key count) is a COBOL-2002 introduction; the edition gate moved
+        // to the post-bind VersionConformancePass (Step 14c), firing on BoundKeyedStart.Length != null. SR8 tests
+        // the PHRASE against the ORGANIZATION and needs no operand, so it is screened before the operand resolves.
+        BoundExpr? length = kp?.startWithLength()?.arithmeticExpression() is { } le ? host.Expr.BindExpr(le) : null;
+        if (length is not null && file.Organization != FileOrganization.Indexed)
+            ctx.Edition.Error(DiagnosticCatalog.IoStatementOperandRule, $"START … WITH LENGTH on '{name}': the LENGTH phrase requires "
+                + "indexed organization (ISO §14.9.41 SR8)");
         Place? operand = kp?.dataReference() is { } dref ? ctx.Refs.Resolve(dref) : null;
         if (kp is not null && operand is null)
             return new BoundUnsupported($"START KEY operand '{kp.dataReference().GetText()}'");
 
-        // WITH LENGTH (§14.9.41 GR13–GR14 partial-key count) is a COBOL-2002 introduction; the edition gate moved
-        // to the post-bind VersionConformancePass (Step 14c), firing on BoundKeyedStart.Length != null.
-        BoundExpr? length = kp?.startWithLength()?.arithmeticExpression() is { } le ? host.Expr.BindExpr(le) : null;
-        if (length is not null && file.Organization != FileOrganization.Indexed)
-            ctx.Edition.Error("COBOLNET0862", $"START … WITH LENGTH on '{name}': the LENGTH phrase requires "
-                + "indexed organization (ISO §14.9.41 SR8)");
+        // §14.9.41.3 SR4 — "Data-name-1 or record-key-name-1 shall not be subject to any OCCURS clauses."
+        // ⛔ ITS OWN NAMED CHECK, AHEAD OF BOTH ORGANIZATION ARMS (kb/Work PB354 part 2/3). It used to have no
+        // site at all: the indexed arm rejected an OCCURS operand only as a SIDE EFFECT of RecordLayout.OffsetOf
+        // bailing out, under SR6's message — a sentence that is FALSE of an item which does begin at the key's
+        // leftmost position — and the relative arm, which never calls OffsetOf, did not reject it at all.
+        bool operandUnderOccurs = operand is not null && Model.RecordLayout.IsSubjectToOccurs(operand.Item);
+        if (operandUnderOccurs)
+            ctx.Edition.Error(DiagnosticCatalog.IoStatementOperandRule, $"START on '{name}': '{operand!.Item.CobolName}' is subject to an "
+                + "OCCURS clause; data-name-1 shall not be (ISO §14.9.41.3 SR4)");
+
+        // §14.9.41.3 SR2 — "If the organization of the file referenced by file-name-1 is sequential, either the
+        // FIRST or the LAST phrase shall be specified." The general format makes FIRST / KEY / LAST mutually
+        // exclusive (the bracket is plain — verified against the printed page), so on a sequential file every
+        // remaining form — the bare START and the KEY phrase alike — violates SR2. ⛔ This is a REJECTION of an
+        // ill-formed statement, never a refusal of the organization: the FIRST/LAST arm above accepts it.
+        if (file.IsSequential)
+        {
+            ctx.Edition.Error(DiagnosticCatalog.IoStatementOperandRule, $"START on sequential-organization file '{name}': either the "
+                + "FIRST or the LAST phrase shall be specified (ISO §14.9.41.3 SR2)");
+            return new BoundNop();   // reported above — not a deferral (kb/Work PB236)
+        }
+        // The SR4 violation is reported; the key screens below cannot run on an operand with no single fixed
+        // position, so the statement stops here rather than reporting a second, wrong reason.
+        if (operandUnderOccurs) return new BoundNop();
 
         if (file.Organization == FileOrganization.Relative)
         {
             if (operand is not null && !ReferenceEquals(operand.Item, file.RelativeKeyItem))
-                ctx.Edition.Error("COBOLNET0862", $"START on '{name}': data-name-1 shall be the RELATIVE KEY "
+                ctx.Edition.Error(DiagnosticCatalog.IoStatementOperandRule, $"START on '{name}': data-name-1 shall be the RELATIVE KEY "
                     + $"item '{file.RelativeKeyItem?.CobolName ?? "(none)"}' (ISO §14.9.41 SR5)");
             operand ??= file.RelativeKeyItem is { } rk ? ctx.Refs.ResolveItem(rk) : null;
             // ⛔ GR8's SUBSTITUTION HAS NO OPERAND, SO THE STATEMENT HAS NO MEANING (kb/Work PB236, row
@@ -304,7 +343,7 @@ internal sealed class KeyedIoBinder(BinderContext ctx, StatementBinder host, Fil
             // no longer as a silent compile followed by a run-time abort.
             if (operand is null)
             {
-                ctx.Edition.Error("COBOLNET0862", $"START on '{name}': the KEY phrase is omitted, so ISO "
+                ctx.Edition.Error(DiagnosticCatalog.IoStatementOperandRule, $"START on '{name}': the KEY phrase is omitted, so ISO "
                     + "§14.9.41.4 GR8 substitutes KEY IS EQUAL TO the RELATIVE KEY item — but this file control "
                     + "entry has no RELATIVE KEY clause, so there is no key to compare. Add a RELATIVE KEY "
                     + "clause to the SELECT, or write an explicit KEY phrase.");
@@ -316,11 +355,17 @@ internal sealed class KeyedIoBinder(BinderContext ctx, StatementBinder host, Fil
         int keyIndex = -1;
         if (operand is not null)
         {
-            if (Model.RecordLayout.KeyIndexByPosition(file, operand.Item) is not { } ki)
+            // §14.9.41.3 SR6 — the operand is EITHER a) a prime or alternate record key of the file, OR b) a
+            // generic key: leftmost-coincident within a record OF THE FILE (b1), of the same class, category and
+            // usage as that key (b2), and no longer than it (b3). The two arms are separate rules with separate
+            // homes in RecordLayout, so b2 could finally be written down (kb/Work PB354 part 4).
+            if ((Model.RecordLayout.KeyIndexOfKeyItem(file, operand.Item)
+                 ?? Model.RecordLayout.GenericKeyIndex(file, operand.Item)) is not { } ki)
             {
-                ctx.Edition.Error("COBOLNET0862", $"START on '{name}': '{operand.Item.CobolName}' neither names "
-                    + "a record key nor begins at the leftmost character position of one with a length not "
-                    + "greater than that key (ISO §14.9.41 SR6)");
+                ctx.Edition.Error(DiagnosticCatalog.IoStatementOperandRule, $"START on '{name}': '{operand.Item.CobolName}' is neither a "
+                    + "record key of the file nor an item that begins at the leftmost character position of one "
+                    + "within a record of that file, has the same class, category and usage as that key, and is "
+                    + "no longer than it (ISO §14.9.41.3 SR6)");
                 return new BoundNop();   // reported above — not a deferral (PB236)
             }
             keyIndex = ki;
@@ -336,7 +381,13 @@ internal sealed class KeyedIoBinder(BinderContext ctx, StatementBinder host, Fil
 
     /// <summary>Build the INVALID/NOT INVALID pair from the phrase's statement blocks — the shared two-branch
     /// shape via the ONE <see cref="PhraseBlocks.Split"/> extractor (P7 Step 10b).</summary>
-    private KeyedInvalidKey KeyedInvalidPhrase(Core.StatementBlockContext[] blocks, bool notFirst)
+    /// <summary>Split an <c>INVALID KEY</c> / <c>NOT INVALID KEY</c> bracket into its two imperatives
+    /// (§14.9.30.2 / §14.9.51.2 / §14.9.35.2 / §14.9.10.2 / §14.9.41.2 — a §5.2.6.4 choice-indicator group, so
+    /// either order). Public because <c>SequentialIoBinder.BindRead</c> binds the phrase too: Format 1 has no
+    /// INVALID KEY phrase, but the report routes through <c>EditionContext.Removed</c>, which under
+    /// <c>--permissive</c> leaves the bind standing — and a standing bind needs the SAME splitter, not a second
+    /// spelling of it (kb/Work PB334).</summary>
+    public KeyedInvalidKey KeyedInvalidPhrase(Core.StatementBlockContext[] blocks, bool notFirst)
     {
         var (inv, not) = PhraseBlocks.Split(blocks, notFirst, b => host.BindBlocks([b]));
         return new KeyedInvalidKey(inv, not);
@@ -345,27 +396,47 @@ internal sealed class KeyedIoBinder(BinderContext ctx, StatementBinder host, Fil
     /// <summary>One-time semantic checks of a keyed file's control entry, run on its first keyed verb (the
     /// FILE-CONTROL clauses are captured by DataBinder; the rules live with the verbs that need them):
     /// an INDEXED file requires a RECORD KEY (ISO §12.4.5.1 Format 1 — RECORD KEY is a required clause);
-    /// a RELATIVE file in random/dynamic access requires a RELATIVE KEY (§12.4.5.13); the RELATIVE KEY item is an
-    /// unsigned integer without 'P' (§12.4.5.13 SR2) and shall NOT be defined within a record of the file
-    /// (§12.4.5.13 SR3 — it lives outside, typically WORKING-STORAGE).</summary>
+    /// a RELATIVE file in random/dynamic access requires a RELATIVE KEY (§12.4.5.13); the RELATIVE KEY item is
+    /// not subject to any OCCURS clause (§12.4.5.13.3 SR1), is an unsigned integer without 'P'
+    /// (§12.4.5.13.3 SR2) and shall NOT be defined within a record of the file (§12.4.5.13.3 SR3 — it lives
+    /// outside, typically WORKING-STORAGE). ⛔ All THREE of §12.4.5.13.3's syntax rules, not two: SR1 was the
+    /// missing member of the set, and its absence covered for the missing §14.9.41.3 SR4 check on the START
+    /// relative arm — a subscripted RELATIVE KEY reached the binder unreported from both directions
+    /// (kb/Work PB354 part 3).</summary>
     private void KeyedValidateFile(FileModel file)
     {
         if (!_keyedCheckedFiles.Add(file)) return;
         if (file.Organization == FileOrganization.Indexed && file.HasFd && file.RecordKeyItem is null)
-            ctx.Edition.Error("COBOLNET0863", $"indexed file '{file.CobolName}' has no RECORD KEY clause "
+            ctx.Edition.Error(DiagnosticCatalog.FileKeyClauseRule, $"indexed file '{file.CobolName}' has no RECORD KEY clause "
                 + "(ISO §12.4.5.1 Format 1 — RECORD KEY is required for ORGANIZATION INDEXED)");
+        // §12.4.5.12.3 SR1 and §12.4.5.6.3 SR1 — the RECORD KEY and ALTERNATE RECORD KEY twins of
+        // §12.4.5.13.3 SR1 below, word for word: "Data-name-1 and data-name-2 shall not be subject to any
+        // OCCURS clauses." Swept in with the RELATIVE KEY member (kb/Work PB354): all three key clauses state
+        // the same ban, and a rule set with one member written down is the shape where the missing members are
+        // hardest to see. (data-name-2 is the SOURCE phrase's operand — not claimed, Annex A.3 item 40 — so
+        // data-name-1 is the whole of what a key clause can carry here.)
+        if (file.RecordKeyItem is { } pk && Model.RecordLayout.IsSubjectToOccurs(pk))
+            ctx.Edition.Error(DiagnosticCatalog.FileKeyClauseRule, $"RECORD KEY '{pk.CobolName}' is subject to an OCCURS clause; "
+                + "data-name-1 shall not be (ISO §12.4.5.12.3 SR1)");
+        foreach (var (alt, _, _) in file.AlternateKeys)
+            if (Model.RecordLayout.IsSubjectToOccurs(alt))
+                ctx.Edition.Error(DiagnosticCatalog.FileKeyClauseRule, $"ALTERNATE RECORD KEY '{alt.CobolName}' is subject to an "
+                    + "OCCURS clause; data-name-1 shall not be (ISO §12.4.5.6.3 SR1)");
         if (file.Organization != FileOrganization.Relative) return;
         if (file.RelativeKeyItem is null && file.AccessMode != FileAccessMode.Sequential)
-            ctx.Edition.Error("COBOLNET0863", $"relative file '{file.CobolName}' is ACCESS {file.AccessMode} "
+            ctx.Edition.Error(DiagnosticCatalog.FileKeyClauseRule, $"relative file '{file.CobolName}' is ACCESS {file.AccessMode} "
                 + "but has no RELATIVE KEY clause (ISO §12.4.5.13 — required for random/dynamic access)");
         if (file.RelativeKeyItem is not { } rk) return;
+        if (Model.RecordLayout.IsSubjectToOccurs(rk))
+            ctx.Edition.Error(DiagnosticCatalog.FileKeyClauseRule, $"RELATIVE KEY '{rk.CobolName}' is subject to an OCCURS clause; "
+                + "data-name-1 shall not be (ISO §12.4.5.13.3 SR1)");
         if (rk.Pic is not { Category: PicCategory.Numeric, Scale: 0, Signed: false })
-            ctx.Edition.Error("COBOLNET0863", $"RELATIVE KEY '{rk.CobolName}' shall be an unsigned integer "
+            ctx.Edition.Error(DiagnosticCatalog.FileKeyClauseRule, $"RELATIVE KEY '{rk.CobolName}' shall be an unsigned integer "
                 + "without the symbol 'P' (ISO §12.4.5.13 SR2)");
         DataItem root = rk;
         while (root.Parent is { } p) root = p;
         if (file.Records.Contains(root))
-            ctx.Edition.Error("COBOLNET0863", $"RELATIVE KEY '{rk.CobolName}' shall not be defined within a "
+            ctx.Edition.Error(DiagnosticCatalog.FileKeyClauseRule, $"RELATIVE KEY '{rk.CobolName}' shall not be defined within a "
                 + $"record description of file '{file.CobolName}' (ISO §12.4.5.13 SR3)");
     }
 }

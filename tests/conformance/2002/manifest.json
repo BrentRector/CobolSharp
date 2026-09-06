@@ -206,8 +206,13 @@
     "pb316_open_group_scope",
     "pb319_sr8_antecedent",
     "pb331_read_lock_brackets",
+    "pb352_start_sequential_first_last",
+    "pb354_start_generic_key_ok",
     "pb340_advancing_on_lock_relative",
-    "pb340_advancing_on_lock_indexed"
+    "pb340_advancing_on_lock_indexed",
+    "pb334_read_previous_sequential",
+    "l1_use_sr14_pair_twice_one_statement",
+    "l1_use_sr14_bare_name_repeated"
   ],
   "pending": []
 }

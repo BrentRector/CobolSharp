@@ -182,6 +182,7 @@ def grammar_rules(text: str) -> dict[str, str]:
 
 _TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
+<<<<<<< HEAD
 #: A LEXER rule head — an uppercase name and its `:`. The body decides what kind of token it is.
 LEXER_RULE = re.compile(r"^([A-Z][A-Z0-9_]*)[ \t]*:(.*?)(?<!\\);", re.M | re.S)
 #: What is left of a lexer body once its quoted literals, its `->` action, and its punctuation are removed. A
@@ -224,6 +225,8 @@ def keyword_spellings(files: list[pathlib.Path]) -> dict[str, set[str]]:
             out.setdefault(name, set()).update(w.upper().replace("-", "_") for w in lits)
     return out
 
+=======
+>>>>>>> origin/main
 
 def alternatives(body: str) -> list[str]:
     """One rule body split into its TOP-LEVEL alternatives (a `|` inside `(…)` belongs to an inner group)."""
@@ -311,6 +314,7 @@ def required_tokens(rules: dict[str, str]) -> dict[str, set[str]]:
     out: dict[str, set[str]] = {}
     for name, body in rules.items():
         alts = alternatives(body)
+<<<<<<< HEAD
         spellings: list[tuple[str, ...]] = []             # the mandatory token SEQUENCE of each alternative
         is_spelling: list[bool] = []                      # …and whether it is a FORMAT rather than a name list
         for alt in alts:
@@ -338,6 +342,14 @@ def required_tokens(rules: dict[str, str]) -> dict[str, set[str]]:
                 if any(other == seq[:k] + seq[k + 1:] for j, other in enumerate(spellings) if j != i):
                     continue
                 need.add(w)
+=======
+        need: set[str] = set()
+        for alt in alts:
+            scanned = scan_alternative(alt)
+            if len(alts) > 1 and len(scanned) == 1 and not re.search(r"(?<![A-Za-z0-9_])[a-z][A-Za-z0-9_]*", alt):
+                continue                                  # a bare name alternative, not a spelling
+            need |= {w for w, opt in scanned if not opt}
+>>>>>>> origin/main
         if len(need) == 1 and optional_only.get(name, False):
             whole = [w for alt in alts for w, _ in scan_alternative(alt)]
             if len(whole) == 1:
@@ -447,6 +459,7 @@ def main() -> int:
             rules[n] = b
             origin[n] = f.name
     needed = required_tokens(rules)
+<<<<<<< HEAD
     keywords = keyword_spellings(files)
     print(f"grammar files scanned: {len(files)}   parser rules: {len(rules)}   "
           f"rules demanding at least one token: {sum(1 for v in needed.values() if v)}   "
@@ -471,6 +484,11 @@ def main() -> int:
         """
         return all(sp & printed for t in needed[rule] if (sp := keywords.get(t)))
 
+=======
+    print(f"grammar files scanned: {len(files)}   parser rules: {len(rules)}   "
+          f"rules demanding at least one token: {sum(1 for v in needed.values() if v)}")
+
+>>>>>>> origin/main
     # ---- the spec side -----------------------------------------------------------------------------------
     formats = declared_formats(SPEC_MD.read_text(encoding="utf-8"))
     heads = clause_page.index(doc)
@@ -517,6 +535,7 @@ def main() -> int:
                   f"      optional: {' '.join(sorted(plain)) or '(none)'}")
         if not plain or not f.keyword:
             continue
+<<<<<<< HEAD
         printed = {w.replace("-", "_") for w in plain | underlined}
         tok = f.keyword.replace("-", "_")
         anchors = {n for n in rules if tok in needed[n] and spells_this_construct(n, printed)}
@@ -531,6 +550,12 @@ def main() -> int:
                 # rules under AFTER and SECONDS only (kb/Work PB695).
                 if w == f.keyword:
                     continue
+=======
+        tok = f.keyword.replace("-", "_")
+        anchors = {n for n in rules if tok in needed[n]}
+        for rule in sorted(closure(rules, anchors)):
+            for w in sorted(plain):
+>>>>>>> origin/main
                 if w.replace("-", "_") in needed[rule]:
                     print(f"  CANDIDATE  {f.keyword:<14} {f.clause:<12} p{heads[i].page:<5} "
                           f"{w:<12} required in {origin[rule]}#{rule}")
