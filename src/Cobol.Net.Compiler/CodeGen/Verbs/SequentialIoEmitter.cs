@@ -73,13 +73,20 @@ internal sealed class SequentialIoEmitter(EmitContext ctx, NumericRenderer num, 
         foreach (var file in ctx.Data.Files)
         {
             if (file.IsSortMerge) continue;   // an SD is the in-memory sort store (ISO §13.4.6) — never a host file
-            if (!file.IsSequential) { keyedIo.EmitRegistration(w, file); EmitSharingRegistration(w, file); continue; }   // relative/indexed connectors
+            // ⛔ THE RECORD-LESS ARM IS DECIDED ONCE, ABOVE THE ORGANIZATION SPLIT (kb/Work PB345). It used to be
+            // asked TWICE and answered differently — here it registered only a REPORT file, and
+            // KeyedIoEmitter.EmitRegistration returned outright — so a legal record-description-less FD
+            // (ISO §13.4.5.3 SR3) produced NO file connector on either arm and its first I-O verb aborted the run
+            // unit. Since PB345 every such FD carries §14.9.30.4 GR6's implied record description, synthesized at
+            // bind time (DataBinder.MaterializeImpliedRecord), so exactly TWO shapes reach here with no record:
+            //   • a REPORT FILE, which legally has none (ISO §9.1.22 / §13.18.46 / §13.4.5.3 SR8) and MUST still
+            //     register, or its OPEN falls through to the keyed registries and the report engine's writes go
+            //     into a void (the silent-OPEN-no-op hazard, COBOLNET_REPORT_WRITER_DESIGN §7); its record width
+            //     is the widest hosted report's line width;
+            //   • a SELECT with NO file description entry at all, which §13.4.5.4 GR1 leaves connector-less and
+            //     the front end has already diagnosed — there is nothing to register.
             if (file.Records.Count == 0)
             {
-                // A REPORT FILE legally has no record description (ISO §9.1.22 / §13.18.46) — it MUST still
-                // register, or its OPEN falls through to the keyed registries and the report engine's writes go
-                // into a void (the silent-OPEN-no-op hazard, COBOLNET_REPORT_WRITER_DESIGN §7). The record
-                // width is the widest hosted report's line width.
                 if (file.ReportNames.Count > 0)
                 {
                     int width = Math.Max(1, ctx.Data.Reports
@@ -89,6 +96,7 @@ internal sealed class SequentialIoEmitter(EmitContext ctx, NumericRenderer num, 
                 }
                 continue;
             }
+            if (!file.IsSequential) { keyedIo.EmitRegistration(w, file); EmitSharingRegistration(w, file); continue; }   // relative/indexed connectors
             bool lineSeq = file.Organization == FileOrganization.LineSequential;
             // A variable-length file registers its record-size bounds (ISO §13.18.43 GR9/GR10) — the connector
             // length-frames its records and enforces the GR14 '44' boundary checks.
@@ -421,12 +429,12 @@ internal sealed class SequentialIoEmitter(EmitContext ctx, NumericRenderer num, 
 
     /// <summary>Render the governed sequential-organization READ call (§14.9.30.4 GR9–GR12 over the ordinal lock
     /// identity, plus the GR22 skip-scan) as the plain read's BOOL. The runtime entry is the ONE governed
-    /// Format-1 read shared with the keyed emitter, so <c>previous</c> is passed explicitly — always false here,
-    /// because <see cref="BoundRead"/> carries no direction yet (kb/Work PB334).</summary>
+    /// Format-1 read shared with the keyed emitter, so <c>previous</c> is passed explicitly — taken from the
+    /// <see cref="BoundRead.Kind"/> §14.9.30.4 GR19 carries (kb/Work PB334).</summary>
     private string EmitReadSharedCall(BoundRead rd, string name, string tmp)
     {
         var (retryKind, retryAmount) = RenderRetry(rd.Retry);
-        return RuntimeApi.FileReadSharedOk(name, "false", RuntimeRecordLock(rd.Lock),
+        return RuntimeApi.FileReadSharedOk(name, rd.Kind == ReadKind.Previous ? "true" : "false", RuntimeRecordLock(rd.Lock),
             rd.AdvancingOnLock ? "true" : "false", rd.IgnoringLock ? "true" : "false",
             retryKind, retryAmount, tmp);
     }
@@ -471,6 +479,9 @@ internal sealed class SequentialIoEmitter(EmitContext ctx, NumericRenderer num, 
         // 51 per GR10a), the GR11 lock discipline, and the GR22 ADVANCING ON LOCK skip-scan. Unconditional
         // (kb/Work PB683): the runtime falls through to the plain retrieval for a connector that is not
         // sharing-active, and only the runtime can see an OPEN statement's own SHARING phrase (§9.1.15).
+        // §14.9.30.4 GR19's read kind rides INSIDE that one call as the direction of the retrieval; GR21's
+        // sequential-file rules b)/c) then select the record NUMBER from it (kb/Work PB334). With one call shape
+        // there is no longer a second place to drop it — which is how `READ … PREVIOUS` became a forward read.
         string readCall = EmitReadSharedCall(rd, name, tmp);
         using (w.Block($"if ({readCall})"))
         {
@@ -484,6 +495,13 @@ internal sealed class SequentialIoEmitter(EmitContext ctx, NumericRenderer num, 
             if (rd.Into is { } into && area is not null)
                 move.Emit(new BoundMove(new BoundFieldOperand(area), [into]));
             if (rd.NotAtEnd is { } not) Statements.EmitStatementList(not);
+            // §14.9.30.4 GR13c — on a successful READ "control is transferred to the end of the READ statement,
+            // or, if the NOT AT END phrase or NOT INVALID KEY phrase is specified, to imperative-statement-2".
+            // The phrase is never conforming source on this arm (Format 1 has no INVALID KEY bracket — the
+            // binder reports COBOLNET1720), so this renders only under --permissive, where the bind stands and
+            // the block has to MEAN something rather than vanish. There is deliberately NO invalid-key arm: a
+            // sequential-organization READ raises no '2x' status (§9.1.13.5), so the condition cannot exist.
+            if (rd.InvalidKey?.NotInvalid is { } notInvalid) Statements.EmitStatementList(notInvalid);
         }
         using (w.Block("else"))
         {

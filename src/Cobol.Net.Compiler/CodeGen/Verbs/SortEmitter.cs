@@ -100,9 +100,12 @@ internal sealed class SortEmitter(EmitContext ctx, DispatchState dispatch,
         // §14.9.40 GR12 b) / §14.9.24 GR7 b): "Each record is obtained as if a READ statement with the NEXT
         // phrase, the IGNORING LOCK phrase, and the AT END phrase had been executed." An IGNORING LOCK read is a
         // GOVERNED read (§14.9.30.4 GR12 is what suppresses the GR9 conflict), so it renders the ONE governed
-        // Format-1 entry with `ignoringLock: true` — never the ungoverned one, which would answer '51' against
-        // another connector's lock and truncate the transfer, and which cannot see the sharing mode the implicit
-        // OPEN established anyway (§9.1.15; kb/Work PB683). GR11 c) still sets the AUTOMATIC lock through it.
+        // Format-1 entry with `ignoringLock: true` — never an ungoverned one, which would answer '51' against
+        // another connector's lock and truncate the transfer, and which could not see the sharing mode the
+        // implicit OPEN established anyway (§9.1.15; kb/Work PB683). GR11 c) still sets the AUTOMATIC lock
+        // through it. The "false" is §14.9.30.4 GR19's NEXT: this retrieval is the forward walk of §14.9.43.4
+        // ("the records … are transferred … in the order in which they are made available"), never a
+        // statement-written direction — this loop renders no READ statement of the program's (kb/Work PB334).
         using (w.Block($"while ({RuntimeApi.FileReadSharedOk(f, "false", "FileRecordLock.None", "false", "true", "FileRetryKind.None", "0", tmp)})"))
         {
             // GR12b: a record larger/smaller than the SD's record range ⇒ EC-SORT-MERGE-RELEASE (checking OFF,

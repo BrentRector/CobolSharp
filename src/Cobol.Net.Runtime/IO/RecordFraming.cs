@@ -27,7 +27,7 @@ namespace CobolNet.Runtime.IO;
 /// Two access shapes over the SAME byte layout:
 /// <list type="bullet">
 /// <item><b>Store-level</b> (<see cref="WriteStore"/>/<see cref="ReadStore"/>) — the whole-file rewrite/load the
-/// keyed connectors use (relative slots + indexed arrival order).</item>
+/// keyed connectors use (relative slots + the indexed persist order — IndexedConnector.PersistOrder).</item>
 /// <item><b>Stream-level</b> (<see cref="WritePrefix"/>/<see cref="PrefixLength"/>) — the incremental
 /// prefix-per-record shape the sequential connector streams through its Latin-1 reader/writer (chars 0–255 map
 /// 1:1 to bytes under Latin-1, so the char-shaped prefix is byte-identical to the store-level one).</item>
@@ -75,6 +75,40 @@ internal static class RecordFraming
             frames.Add(Encoding.Latin1.GetString(payload));
         }
         return frames;
+    }
+
+    /// <summary>The byte offset of every frame in a framed physical file, in order (index = ordinal − 1).
+    /// This is the positioning index a §14.9.30.4 GR21 BACKWARD sequential READ needs on a RECORD VARYING file,
+    /// whose frames are not uniformly wide the way a fixed record-sequential file's blocks are. Only the length
+    /// prefixes are read — each payload is SEEKED over, never materialized — so the index costs one pass and no
+    /// record storage. A torn tail ends the store, the same rule <see cref="ReadStore"/> applies.
+    /// <para>⛔ IT INDEXES THE CONNECTOR'S OWN OPEN STREAM, NOT A PATH. Only a backward READ on an ALREADY-OPEN
+    /// varying file asks for this index, so the presence question is already answered and asking the host again
+    /// would be a second answer to it: <see cref="HostFile.Probe"/> is the ONE place the runtime asks the
+    /// operating environment about a physical file and it is asked once per OPEN by <c>FileConnector.Open</c>,
+    /// never by an organization body (<c>HostFileProbeDriftTests</c>, kb/Work PB323). Re-opening by path would
+    /// also take a SECOND handle on a file the connector may hold under a deny-share mode, and could index a
+    /// different file than the one the connector is reading. The walk moves the stream position and leaves it
+    /// where it stops; every caller reaches <c>SequentialConnector.SeekToRecord</c> immediately afterwards,
+    /// which seeks and discards the reader's buffer.</para></summary>
+    public static List<long> FrameStarts(Stream fs)
+    {
+        var starts = new List<long>();
+        fs.Seek(0, SeekOrigin.Begin);
+        var len = new byte[4];
+        while (true)
+        {
+            long at = fs.Position;
+            if (!FillExactly(fs, len, 4)) break;
+            uint n = BinaryPrimitives.ReadUInt32LittleEndian(len);
+            if (n != GapTag)
+            {
+                if (fs.Position + n > fs.Length) break;   // a torn tail ends the store
+                fs.Seek(n, SeekOrigin.Current);
+            }
+            starts.Add(at);
+        }
+        return starts;
     }
 
     private static bool FillExactly(Stream s, byte[] buf, int count)
