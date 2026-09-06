@@ -1,5 +1,6 @@
 {
   "enabled": [
+    "pb695_special_names_optional_words",
     "pb332_use_optional_words",
     "pb347_record_name_identity_85",
     "pb324_assign_using_85",
