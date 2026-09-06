@@ -270,13 +270,19 @@ public sealed class OptionalWordSubsetDriftTests
     """;
 
     // PROGRAM and COLLATING are separate optional words of the same head; the FOR-less arm above cannot also
-    // exercise the `IS alphabet-name-1` arm, so this row sweeps the head over that arm instead.
+    // exercise the `IS alphabet-name-1` arm, so this row sweeps the head over that arm instead — at COBOL-85,
+    // where that arm is the whole format.
+    // ⛔ THE COMPUTER-NAME IS WRITTEN DELIBERATELY, and it is what makes this row bite. Omitting it is a
+    // SEPARATE 2002 relaxation (`computer-name-optional-2002`, COBOLNET0900), so a name-less spelling at 85 is
+    // correctly rejected and would only measure that gate. With the name present, every subset also drives the
+    // `computerAttributes` token sink past its stop condition: the sink follows the name and must give the
+    // clause back whether it opens on PROGRAM, on COLLATING or on SEQUENCE.
     private const string ObjectComputerHead = """
            IDENTIFICATION DIVISION.
            PROGRAM-ID. OPWI.
            ENVIRONMENT DIVISION.
            CONFIGURATION SECTION.
-           OBJECT-COMPUTER.
+           OBJECT-COMPUTER. IBM-370
                {0} {1} SEQUENCE {2} AL-REV.
            SPECIAL-NAMES.
                ALPHABET AL-REV IS "Z" THRU "A".
