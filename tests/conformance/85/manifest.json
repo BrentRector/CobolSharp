@@ -1,5 +1,7 @@
 {
   "enabled": [
+  "pb345_record_less_fd_area",
+    "pb332_use_optional_words",
     "pb347_record_name_identity_85",
     "pb324_assign_using_85",
     "pb326_flow_report_unconditional",
@@ -34,7 +36,8 @@
     "pb297_figurative_refmod_relation",
     "pb305_cross_argument_numeric_edited_85",
     "pb317_open_no_rewind_85",
-    "pb686_linage_gr26_boundary_85"
+    "pb686_linage_gr26_boundary_85",
+    "l1_use_sr8_file_named_twice"
   ],
   "pending": []
 }

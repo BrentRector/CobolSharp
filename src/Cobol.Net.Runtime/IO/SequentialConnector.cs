@@ -52,9 +52,30 @@ public sealed class SequentialConnector : FileConnector
     private long _writeBase = -1;     // -1 = not seeded (unshared / not yet opened shared)
     private long _writesDone;         // successful record writes since OPEN
 
-    /// <summary>The ordinal the NEXT sequential Read would deliver (the §14.9.30 GR9 pre-read conflict target —
-    /// knowable BEFORE the read because sequential retrieval advances by exactly one record).</summary>
-    internal long NextReadOrdinal => _readOrdinal + 1;
+    // §13.18.43 GR2 frame offsets of a RECORD VARYING file, index = ordinal − 1. Built LAZILY, on the first
+    // backward read only: a forward READ walk must not pay for a facility it never uses, and a fixed-width file
+    // never needs it at all (its offsets are arithmetic). The physical frame layout cannot change while a
+    // connector is open — §14.9.35.4 GR16 makes a record-sequential REWRITE size-preserving — so one build per
+    // OPEN is enough; OpenCore drops it.
+    private List<long>? _varyingStarts;
+
+    /// <summary>The ordinal a sequential Read in the given DIRECTION would deliver (the §14.9.30.4 GR9 pre-read
+    /// conflict target — knowable BEFORE the read because sequential retrieval moves by exactly one record).
+    /// GR21's "When the file is a sequential file" rules decide it: rule b) — the file position indicator
+    /// established by a prior OPEN selects "the first existing record … regardless of whether NEXT or PREVIOUS is
+    /// specified", so both directions target ordinal 1; rule c) — after a successful READ, the record whose
+    /// number is greater than the indicator for NEXT and less than it for PREVIOUS. 0 means no such record exists
+    /// (the beginning of the file), which rule e) makes the at-end condition.
+    /// <para>⛔ <c>_readOrdinal == 0</c> IS rule b's antecedent ONLY WHILE START HAS NO SEQUENTIAL ARM. The rule
+    /// says "established by a prior successful OPEN <b>or START</b> statement", and §14.9.41.3 SR2 does admit a
+    /// START on a sequential-organization file ("If the organization of the file referenced by file-name-1 is
+    /// sequential, either the FIRST or the LAST phrase shall be specified"). <c>KeyedIoBinder.BindStart</c>
+    /// declines that form LOUDLY today (<c>BoundUnsupported</c>, "a later slice"), so OPEN and READ are the only
+    /// two ways this connector's indicator is ever set. Whoever lands START FIRST/LAST here shall revisit THIS
+    /// method: a START-established indicator is INCLUSIVE, so rule b would then have to select the started-at
+    /// record itself in either direction rather than ordinal 1.</para></summary>
+    internal long TargetReadOrdinal(bool previous) =>
+        !previous || _readOrdinal == 0 ? _readOrdinal + 1 : _readOrdinal - 1;
 
     /// <summary>True when a Read executed now would reach the physical-read stage (open INPUT/I-O, no '46'
     /// poison, a live stream) — the registry's lock pre-check runs only then, so a mode/position failure keeps
@@ -254,6 +275,7 @@ public sealed class SequentialConnector : FileConnector
         _lastLineBytes = 0;
         _lastReadLinePartial = false;
         _readOrdinal = 0;
+        _varyingStarts = null;   // rebuilt on demand against THIS open's physical file
         _writeBase = -1;   // unshared default; the registry seeds a sharing-active connector (§9.1.16)
         _writesDone = 0;
         // Table 18's "file is available" / "file is unavailable" axis. The base has already answered
@@ -495,14 +517,33 @@ public sealed class SequentialConnector : FileConnector
 
     // ── READ ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-    /// <summary>Sequential <c>READ … NEXT</c> (ISO §14.9.30). Returns the record image (padded to the record width)
-    /// in <paramref name="image"/> and <see langword="true"/> on success; <see langword="false"/> at end-of-file
-    /// (AT END, status 10) or any unsuccessful read. Sets the status.</summary>
-    public bool Read(out string image)
+    /// <summary>Sequential <c>READ … {NEXT | PREVIOUS}</c> (ISO §14.9.30 Format 1). Returns the record image
+    /// (padded to the record width) in <paramref name="image"/> and <see langword="true"/> on success;
+    /// <see langword="false"/> at end-of-file / beginning-of-file (AT END, status 10) or any unsuccessful read.
+    /// Sets the status.
+    /// <para><paramref name="previous"/> is §14.9.30.4 GR19's read kind, taken from the statement's PREVIOUS
+    /// phrase. It selects the record NUMBER (GR21 rules b/c), and nothing else about the read changes — which is
+    /// why the reposition below feeds the SAME physical read body rather than a second reader.</para></summary>
+    public bool Read(bool previous, out string image)
     {
         image = new string(' ', RecordWidth);
         if (SequentialReadGuard() is { } guard) { Status = guard; return false; }   // '47'/'46'/'10' — FileConnector
         if (_reader is null) { Status = FileStatusCode.ReadNotOpenForInput; return false; }
+
+        // §14.9.30.4 GR21, "When the file is a sequential file": the direction selects the record NUMBER, so a
+        // backward read is a REPOSITION to that ordinal followed by the ordinary physical read. Rule e) — "If no
+        // record is found that satisfies the above rules, the at end condition exists" — is the target-below-1
+        // arm; §14.9.30.4 GR24 then sets '10' and the AT END imperative runs, exactly as it does at EOF.
+        if (previous)
+        {
+            long target = TargetReadOrdinal(true);
+            if (target < 1) { LastReadUnsuccessful = true; Status = FileStatusCode.AtEnd; return false; }   // GR21 e
+            // §14.9.30.4 GR20 — "If the PREVIOUS phrase is specified, the physical file associated with the file
+            // connector referenced by file-name-1 shall be a single reel/unit mass storage file." A stream that
+            // cannot be positioned is not one; report the permanent error rather than silently reading something
+            // else (the same posture the non-seekable REWRITE arm below takes).
+            if (!SeekToOrdinal(target)) { Status = FileStatusCode.PermanentError; return false; }
+        }
 
         // §14.9.30 GR14 (READ) / §9.1.13.2 item 3: a RECORD-sequential physical record whose length is outside the file's
         // min/max record size is a SUCCESSFUL read with status '04' (the record is still delivered). Line-sequential
@@ -523,15 +564,8 @@ public sealed class SequentialConnector : FileConnector
                 _lineRemainder = null;
                 _lastReadLinePartial = true;   // a served remainder is only PART of its physical line (§14.9.35 GR17a)
             }
-            else
-            {
-                _lastLineStart = _lineByteOffset;                      // byte anchor of the physical line (§14.9.35 GR17 REWRITE)
-                line = ReadPhysicalLine(out int delimBytes);
-                if (line is null) { LastReadUnsuccessful = true; Status = FileStatusCode.AtEnd; return false; }
-                _lineByteOffset += line.Length + delimBytes;          // Latin1: chars == bytes (past data + delimiter)
-                _lastLineBytes = Math.Min(line.Length, RecordWidth);  // data length of the record being replaced
-                _lastReadLinePartial = line.Length > RecordWidth;     // an over-length read transfers only part (GR17a)
-            }
+            else if (NextFrame(out _) is { } physical) line = physical;
+            else { LastReadUnsuccessful = true; Status = FileStatusCode.AtEnd; return false; }
             if (line.Length > RecordWidth)
             {
                 _lineRemainder = line[RecordWidth..];
@@ -549,41 +583,100 @@ public sealed class SequentialConnector : FileConnector
             // ('06') read; the status arbitration below follows that order (kb/Work PB329).
             lineBadChar = RecordAreaOutsideLineCharacterSet(image);
         }
-        else if (IsVarying)
+        else if (NextFrame(out _) is { } data)
         {
-            // Length-framed record: 4-byte LE prefix + payload (see the framing note at the field declarations).
-            var pre = new char[4];
-            if (FillChars(pre, 4) < 4) { LastReadUnsuccessful = true; Status = FileStatusCode.AtEnd; return false; }
-            int len = RecordFraming.PrefixLength(pre);
-            var buf = new char[len];
-            int n = FillChars(buf, len);
-            _lastReadBlockStart = _reader.BaseStream.CanSeek ? _readOffset + 4 : -1;
-            _readOffset += 4 + n;
-            LastReadLength = n;
-            image = Fit(new string(buf, 0, n));   // §14.9.30.4 GR14/GR15 fill — national-aware (kb/Work PB327)
-            if (n < VaryMin || n > VaryMax) shortLong = true;   // outside the varying record min/max (§14.9.30 GR14)
+            LastReadLength = data.Length;
+            image = Fit(data);   // §14.9.30.4 GR14/GR15 fill — national-aware (kb/Work PB327)
+            // A VARYING record outside the file's min/max is §14.9.30 GR14's '04'. Fixed-length record
+            // sequential: min == max == RecordWidth, so a partial (short) final record is '04' too; a
+            // longer-than-max record cannot occur (the frame is read in RecordWidth chunks).
+            shortLong = IsVarying ? data.Length < VaryMin || data.Length > VaryMax : data.Length < RecordWidth;
         }
-        else
-        {
-            // The block start is the LOGICAL offset (characters consumed so far — 1:1 with bytes under Latin1),
-            // never BaseStream.Position: the StreamReader buffers ahead, so the base position is the buffer-fill
-            // boundary, not the read position.
-            var buf = new char[RecordWidth];
-            int n = FillChars(buf, RecordWidth);
-            if (n == 0) { LastReadUnsuccessful = true; Status = FileStatusCode.AtEnd; return false; }
-            _lastReadBlockStart = _reader.BaseStream.CanSeek ? _readOffset : -1;
-            _readOffset += n;
-            LastReadLength = n;
-            image = Fit(new string(buf, 0, n));   // §14.9.30.4 GR14 fill — national-aware (kb/Work PB327)
-            // Fixed-length record sequential: min == max == RecordWidth, so a partial (short) final record is '04'.
-            // A longer-than-max record cannot occur (the buffer is read in RecordWidth chunks). n == 0 is EOF above.
-            if (n < RecordWidth) shortLong = true;
-        }
+        else { LastReadUnsuccessful = true; Status = FileStatusCode.AtEnd; return false; }
         _readOrdinal++;   // the record just made available is ordinal N+1 (§9.1.16 lock identity)
         ReadSucceeded(lineBadChar ? FileStatusCode.LineRecordInvalidCharRead   // '09' §14.9.30.4 GR16 — stated after GR15, so it wins over '06'
             : lineTooLong ? FileStatusCode.LineRecordTooLong
             : shortLong ? FileStatusCode.RecordLengthShortLong : FileStatusCode.Success);
         return true;
+    }
+
+    /// <summary>Position the reader at the first character of record <paramref name="ordinal"/> (1-based) so the
+    /// ordinary read body delivers it — the ONE reposition, used by the §14.9.30.4 GR21 backward read.
+    /// <para>Returns false when the physical file cannot support it, which §14.9.30.4 GR20 makes the program's
+    /// error rather than a behaviour: a stream that cannot seek, or a LINE SEQUENTIAL file — for which
+    /// §14.9.30.3 SR7 forbids the PREVIOUS phrase outright, so the binder has already reported COBOLNET1720 and
+    /// this arm is the defensive floor under <c>--permissive</c>.</para>
+    /// <para>The offset is ARITHMETIC on a fixed-width record-sequential file and comes from the frame index on
+    /// a RECORD VARYING one. ⛔ This member answers only WHERE the record starts; the reposition itself is
+    /// <see cref="SeekToRecord"/>, the ONE primitive that also resets every derived read fact (kb/Work PB352) —
+    /// a second seek-and-discard here would be the same rule written twice.</para></summary>
+    private bool SeekToOrdinal(long ordinal)
+    {
+        if (_lineSequential || ordinal < 1 || _reader is not { BaseStream: { CanSeek: true } stream }) return false;
+        long start;
+        if (IsVarying)
+        {
+            _varyingStarts ??= RecordFraming.FrameStarts(stream);
+            // A target past the last frame is NOT a positioning failure — it is §14.9.30.4 GR21 e), "no record
+            // is found that satisfies the above rules", and the read body reports it as the ordinary at-end
+            // once positioned at the end of data. (Reachable: a PREVIOUS on a freshly opened EMPTY varying
+            // file targets ordinal 1 by rule b and there is no ordinal 1.) The fixed-width branch below gets
+            // this for free, because seeking past the end yields a zero-character read.
+            start = ordinal <= _varyingStarts.Count ? _varyingStarts[(int)(ordinal - 1)] : stream.Length;
+        }
+        else
+        {
+            if (RecordWidth <= 0) return false;
+            start = (ordinal - 1) * RecordWidth;
+        }
+        SeekToRecord(start, ordinal - 1);   // the shared read body's post-increment then lands on `ordinal`
+        return true;
+    }
+
+    /// <summary>⛔ THE ONE PHYSICAL FRAMING WALK for the three on-disk shapes a sequential file has — a
+    /// newline-delimited line, a 4-byte-length-prefixed VARYING frame, and a fixed-width block. Advances the
+    /// reader by exactly ONE physical record, returns its RAW data (neither padded nor truncated) and reports
+    /// the record's byte anchor in <paramref name="frameStart"/>; <see langword="null"/> at end-of-data.
+    /// <para>It carries no I-O status, no record-area fill and no <see cref="_lineRemainder"/> chunking: those
+    /// are §14.9.30's rules and belong to <see cref="Read"/>. Extracted so START's record scan
+    /// (<see cref="StartFirstLast"/>) walks the file with the SAME framing the reader uses instead of a second
+    /// copy of it (kb/Work PB352) — the byte anchors it needs are exactly the ones REWRITE already
+    /// tracks.</para></summary>
+    private string? NextFrame(out long frameStart)
+    {
+        if (_lineSequential)
+        {
+            frameStart = _lineByteOffset;
+            _lastLineStart = _lineByteOffset;                     // byte anchor of the physical line (§14.9.35 GR17 REWRITE)
+            string? line = ReadPhysicalLine(out int delimBytes);
+            if (line is null) return null;
+            _lineByteOffset += line.Length + delimBytes;          // Latin1: chars == bytes (past data + delimiter)
+            _lastLineBytes = Math.Min(line.Length, RecordWidth);  // data length of the record being replaced
+            _lastReadLinePartial = line.Length > RecordWidth;     // an over-length read transfers only part (GR17a)
+            return line;
+        }
+        // The block start is the LOGICAL offset (characters consumed so far — 1:1 with bytes under Latin1),
+        // never BaseStream.Position: the StreamReader buffers ahead, so the base position is the buffer-fill
+        // boundary, not the read position.
+        frameStart = _readOffset;
+        if (IsVarying)
+        {
+            // Length-framed record: 4-byte LE prefix + payload (see the framing note at the field declarations).
+            var pre = new char[4];
+            if (FillChars(pre, 4) < 4) return null;
+            int len = RecordFraming.PrefixLength(pre);
+            var vbuf = new char[len];
+            int vn = FillChars(vbuf, len);
+            _lastReadBlockStart = _reader!.BaseStream.CanSeek ? _readOffset + 4 : -1;
+            _readOffset += 4 + vn;
+            return new string(vbuf, 0, vn);
+        }
+        var buf = new char[RecordWidth];
+        int n = FillChars(buf, RecordWidth);
+        if (n == 0) return null;
+        _lastReadBlockStart = _reader!.BaseStream.CanSeek ? _readOffset : -1;
+        _readOffset += n;
+        return new string(buf, 0, n);
     }
 
     /// <summary>Fill exactly <paramref name="count"/> characters (or to end-of-stream): StreamReader.Read may
@@ -679,6 +772,83 @@ public sealed class SequentialConnector : FileConnector
         // A non-seekable line-sequential / record-sequential REWRITE cannot overwrite in place → report a permanent
         // error so the program's FILE STATUS / declarative path observes it (never a silent no-op).
         return Status = FileStatusCode.PermanentError;
+    }
+
+    // ── START (ISO §14.9.41, SEQUENTIAL FILES — General rules 1–7 and 20/21) ─────────────────────────────────
+
+    /// <summary>START FIRST / LAST on a sequential-organization file. §14.9.41.3 SR2 makes these the ONLY two
+    /// forms the statement has on this organization, and §14.9.41.4 GR20/GR21 state their outcome:
+    /// <list type="bullet">
+    /// <item>GR20 — <i>"If FIRST is specified, the file position indicator is set to 1 if records exist in the
+    /// physical file. If no records exist in the file, or the physical file does not support the ability to
+    /// position at the first record, the I-O status value … is set to '23', the invalid key condition exists,
+    /// and the execution of the START statement is unsuccessful."</i></item>
+    /// <item>GR21 — the LAST twin, positioning at <i>"the record number of the last existing logical
+    /// record"</i>.</item>
+    /// </list>
+    /// GR1's open mode is §9.1.13.7 item 7's '47' (<i>"a READ or START statement … not open in the input or I-O
+    /// mode"</i>); GR5's absent OPTIONAL file and both GR20/GR21 failure arms are §9.1.13.5 item 3's '23', whose
+    /// clause d) — <i>"a START statement is attempted on a sequential file that has no records or that does not
+    /// support the ability to position at the specified record"</i> — is written for exactly this connector.
+    /// <para>⛔ AN IMPLEMENTATION THAT CANNOT SEEK STILL OWES AN ANSWER, NEVER AN ABORT: that is the shape of
+    /// GR20/GR21's second arm, and it is why this member exists at all (kb/Work PB352 — the statement used to
+    /// bind to a loud runtime stage that killed the run unit). Positioning is INCLUSIVE, matching the keyed
+    /// connectors: the next sequential READ delivers the record START selected.</para></summary>
+    public string StartFirstLast(bool last)
+    {
+        if (StartOpenModeGuard() is { } notOpen) return Status = notOpen;   // '47' §14.9.41.4 GR1 + GR7
+        if (OptionalAbsent) return StartFail();                        // GR5 / §9.1.13.5 item 3 b)
+        // "or the physical file does not support the ability to position at the first/last record" — a stream
+        // that cannot be repositioned. A FileStream always can; a future non-seekable medium answers '23' here
+        // rather than mis-positioning.
+        if (_reader is not { BaseStream.CanSeek: true }) return StartFail();
+
+        // The scan is the ONE framing walk (NextFrame), so the record boundaries START positions on are exactly
+        // the ones READ would deliver — including a short final block ('04') and a line-sequential file's
+        // physical lines. FIRST stops at the first frame; LAST walks to end-of-data remembering the last one.
+        SeekToRecord(0, 0);
+        long foundStart = -1, foundOrdinal = 0, seen = 0;
+        while (NextFrame(out long frameStart) is not null)
+        {
+            seen++;
+            foundStart = frameStart;
+            foundOrdinal = seen;
+            if (!last) break;
+        }
+        if (foundStart < 0) { SeekToRecord(0, 0); return StartFail(); }   // no records exist — GR20/GR21
+        SeekToRecord(foundStart, foundOrdinal - 1);
+        LastReadUnsuccessful = false;   // a successful START is a reposition: §14.9.30.4 GR21's '46' poison clears
+        return Status = FileStatusCode.Success;
+    }
+
+    /// <summary>An unsuccessful START: §14.9.41.4 GR7 — <i>"the file position indicator is set to indicate that
+    /// no valid record position has been established"</i>, which on this connector is precisely the state
+    /// §9.1.13.7 item 6 a) reads back as '46' on the next sequential READ — and the '23' GR20/GR21 name.</summary>
+    private string StartFail()
+    {
+        InvalidateFilePosition();
+        return Status = FileStatusCode.RecordNotFound;
+    }
+
+    /// <summary>Reposition the reader at <paramref name="byteOffset"/>, which shall be the START of a record,
+    /// and reset every piece of derived read state so the next <see cref="Read"/> behaves as if the file had
+    /// been read up to that point: the logical offsets (both framings), the §14.9.30 GR15 unread remainder, the
+    /// REWRITE byte anchors (a START is not a READ, so §14.9.35's "record being replaced" no longer exists) and
+    /// the §9.1.16 record ordinal, which becomes <paramref name="ordinalBefore"/> so the next record read is
+    /// numbered correctly. <see cref="StreamReader.DiscardBufferedData"/> is required: the reader buffers ahead
+    /// of the base stream, so seeking the stream alone would keep serving stale characters.</summary>
+    private void SeekToRecord(long byteOffset, long ordinalBefore)
+    {
+        _reader!.BaseStream.Seek(byteOffset, SeekOrigin.Begin);
+        _reader.DiscardBufferedData();
+        _readOffset = byteOffset;
+        _lineByteOffset = byteOffset;
+        _lineRemainder = null;
+        _lastReadBlockStart = -1;
+        _lastLineStart = -1;
+        _lastLineBytes = 0;
+        _lastReadLinePartial = false;
+        _readOrdinal = ordinalBefore;
     }
 
     /// <summary>The AT END condition (ISO §14.9.30): true only at end-of-file (status 10).</summary>
