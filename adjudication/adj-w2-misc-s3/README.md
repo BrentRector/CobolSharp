@@ -2,8 +2,8 @@
 
 - **Pinned sha:** `0caa7d54004e81c4e34529d95764cdc1ccec1779` (probe compiler = the pre-built Debug `cobol` of that tree)
 - **Inputs:** 10 files, 23 rows (§4.2.10, §4.4, §5.2/§5.5, §8.4.3.10.4, §8.8.4.2.1, §9.3.6, §11.9.5.2, §11.9.9.3, §16.2.1.2, §16.2.2.2)
-- **Wall-clock (UTC, `date -u`):** adjudicate 22:18:02 → 22:32:01 (single phase; build skipped per orchestrator, inputs pre-generated) · refute: pending (orchestrator dispatches)
-- **Shape:** every line passes `record_verdicts.py --dry-run` (23 records; GAP 1664 → 1663 if recorded).
+- **Wall-clock (UTC, `date -u`):** adjudicate 22:18:02 → 22:32:01 (single phase; build skipped per orchestrator, inputs pre-generated) · refute: 22:33 → 22:34:30
+- **Shape:** every line passes `record_verdicts.py --dry-run` (23 records; GAP 1664 → 1664 after refute (final.jsonl)).
 
 ## Verdict counts (pre-refute)
 
@@ -26,4 +26,9 @@ New: `no-4.2.10-extension-warning-or-register` (silent), `ec-oo-resource-never-r
 
 ## Refute
 
-Pending — CONFORMS row for the refuter: **SR-5.5-2**. `refute.jsonl` absent; `final.jsonl` = `adjudicate.jsonl` (pre-refute).
+Refuter attacked 1 CONFORMS row: **SR-5.5-2 OVERTURNED → PARTIAL** (0 of 1 upheld). §8.8.2 rule 5 ('The second
+operand shall be an integer operand') is an SR 'integer' site that does not enforce §5.5 2): `BB B-SHIFT-L D` (D PIC
+9V9) and `BB B-SHIFT-L 1.5` compile clean and run (count truncated) — ConditionBinder#BindBoolShiftSuffix, owned by
+open PB1413. Other sites re-probed hold (SET SR1 2326, SEARCH VARYING 2325, STRING/UNSTRING 1651, GOBACK status 1704).
+`final.jsonl` = adjudicate.jsonl with the overturn applied; passes `record_verdicts.py --dry-run` (post-refute:
+CONFORMS 0, PARTIAL 4).
