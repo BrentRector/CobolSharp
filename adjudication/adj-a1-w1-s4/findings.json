@@ -99,5 +99,18 @@
   "code_site": "src/Cobol.Net.Runtime/IO/FileStatus.cs",
   "clause": "\u00a79.1.13.1; \u00a79.1.13.3",
   "owning_note": "NONE (new)"
+ },
+ {
+  "mechanism": "Per-object instance-file close on GC never reaches the real run unit: ~CobolObject enqueues the close via RunUnit.Current, which is AsyncLocal-backed, so on the finalizer thread it creates an orphan RunUnit and the owning registry never drains the close; an unreachable object's file stays open (and registered) until run-unit end",
+  "rule_ids": [
+   "DOC-A.1-113"
+  ],
+  "harm": "wrong-answer",
+  "repro": "/tmp/adj/refute/gc2.cob (copied to adjudication/adj-a1-w1-s4/probes/): loop creates an object that opens its own file OUTPUT and writes without CLOSE, drops the reference, forces allocation; next object's OPEN OUTPUT -> 'K=00000002 OPEN-OUTPUT=61' (re-confirmed by the adjudicator at pin). gc1.cob: record never flushed after ~4M allocations (READ=10).",
+  "expected_from_spec": "\u00a79.3.14.3: an instance object is destroyed when it is determined it cannot take part in continued execution; \u00a79.1.4: implicit CLOSE of the object's file connectors when the object is deleted",
+  "observed_or_reasoning": "the GC does determine unreachability and runs the finalizer, but the close lands on an orphan RunUnit (RunUnit.Current => _current.Value ??= new RunUnit()); only CobolFile.CloseAll at run-unit termination closes the file",
+  "code_site": "src/Cobol.Net.Runtime/Control/CobolObject.cs (finalizer, line ~88); src/Cobol.Net.Runtime/IO/CobolFile.cs#EnqueueInstanceClose; src/Cobol.Net.Runtime/Control/RunUnit.cs#Current",
+  "clause": "\u00a79.3.14.3; \u00a79.1.4",
+  "owning_note": "NONE (new) \u2014 sweep other finalizer/thread-pool callers of RunUnit.Current"
  }
 ]
