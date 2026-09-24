@@ -9,16 +9,17 @@
 |---|---|---|
 | Adjudication (18 rows) | 2026-09-24 22:18:07 | 2026-09-24 22:27:30 |
 | Findings + deliver | 2026-09-24 22:27:30 | 2026-09-24 22:29 |
-| Refute | pending (orchestrator dispatches) | — |
+| Refute | 2026-09-24 22:27:40 | 2026-09-24 22:29:40 |
 
-## Verdict counts (pre-refute)
+## Verdict counts (final — unchanged by refute)
 - DIVERGES 12: 146, 147, 148, 154, 155, 156, 157, 159, 160, 167, 168, 181
 - NEEDS-OWNER-DECISION 5: 149, 152, 161, 162, 172
 - CONFORMS 1: 169 (test-needed)
 
 ## Refute
-refute: pending. CONFORMS rows for the refuter: DOC-A.1-169.
-`final.jsonl` is currently a copy of `adjudicate.jsonl` (pre-refute).
+Refuter result: 1 CONFORMS row attacked (DOC-A.1-169) — UPHELD, 0 overturns.
+- DOC-A.1-169 upheld: A.1 item need not be documented (no §7 row owed); extent specified as zero (BindIoControl Format-3 no-op + COBOLNET_FILES_DESIGN.md "SAME SORT-MERGE AREA are no-ops"); independent probe `refute-probe/r1.cob` correct at 85/2002/2014/2023. Side note: adjudicator probe s2.cob violates SORT §14.9.40.3 SR10 (open kb/Work PB1139).
+`final.jsonl` = `adjudicate.jsonl` (no overturns); `record_verdicts.py --dry-run` passes (18 records).
 
 ## Files
 `adjudicate.jsonl` (per-row checkpoint), `final.jsonl`, `findings.json` (11 mechanisms), this README.
